@@ -43,6 +43,12 @@
 
 ## Deploy steps (not done yet)
 
+0. **Before first push:** set this repo's user.email to the GitHub noreply address and rewrite the existing commits.
+   ```
+   git config user.email "ID+USERNAME@users.noreply.github.com"
+   git rebase -r --root --exec "git commit --amend --no-edit --reset-author"
+   ```
+   Check with `git log --format="%an <%ae>"`. Every commit should show the noreply address.
 1. On github.com, click **+** → **New repository**:
    - Name: `workout-app`
    - Visibility: **Public**

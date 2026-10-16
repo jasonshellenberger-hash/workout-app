@@ -28,7 +28,7 @@ A personal iPhone workout app (PWA): quiet 15–22 minute home workouts, a guide
 
 ## Test locally on Windows
 
-1. Open Command Prompt or PowerShell in this folder (`C:\Users\jason\Apps\workout-app`).
+1. Open Command Prompt or PowerShell in this project folder.
 2. Start a local web server. Python is already installed:
    ```
    python -m http.server 8080
