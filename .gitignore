@@ -1,0 +1,10 @@
+# Personal spec stays local (the repo is public for GitHub Pages)
+SPEC.md
+Workout App Spec.md
+
+# Editor / OS
+.claude/
+.vscode/
+Thumbs.db
+desktop.ini
+.DS_Store

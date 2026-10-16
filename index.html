@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#111317">
+  <meta name="color-scheme" content="dark">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Workout">
+  <meta name="format-detection" content="telephone=no">
+  <title>Workout</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="views" id="views">
+    <section class="view" id="view-today" data-view="today"></section>
+    <section class="view" id="view-history" data-view="history" hidden></section>
+    <section class="view" id="view-food" data-view="food" hidden></section>
+    <section class="view" id="view-me" data-view="me" hidden></section>
+  </main>
+
+  <!-- Primary action for the current view, kept in the thumb zone above the tab bar -->
+  <div class="action-dock" id="action-dock"></div>
+
+  <nav class="tabbar" id="tabbar" aria-label="Tabs">
+    <button class="tab is-active" data-tab="today" aria-label="Today">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+      <span>Today</span>
+    </button>
+    <button class="tab" data-tab="history" aria-label="History">
+      <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>
+      <span>History</span>
+    </button>
+    <button class="tab" data-tab="food" aria-label="Food">
+      <svg viewBox="0 0 24 24"><path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/></svg>
+      <span>Food</span>
+    </button>
+    <button class="tab" data-tab="me" aria-label="Me">
+      <svg viewBox="0 0 24 24"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+      <span>Me</span>
+    </button>
+  </nav>
+
+  <!-- Workout player: full screen, one exercise at a time -->
+  <div class="player" id="player" hidden>
+    <header class="p-top">
+      <button class="icon-btn" id="p-close" aria-label="End workout">
+        <svg viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+      <div class="p-meta">
+        <div class="p-block" id="p-block"></div>
+        <div class="p-progress"><div class="p-progress-fill" id="p-progress-fill"></div></div>
+      </div>
+      <button class="icon-btn" id="p-pause" aria-label="Pause">
+        <svg viewBox="0 0 24 24"><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></svg>
+      </button>
+    </header>
+
+    <div class="p-body" id="p-body">
+      <div class="p-label" id="p-label"></div>
+      <h1 class="p-name" id="p-name"></h1>
+      <div class="p-dial">
+        <svg class="p-ring" viewBox="0 0 200 200" aria-hidden="true">
+          <circle class="p-ring-track" cx="100" cy="100" r="90"/>
+          <circle class="p-ring-fill" id="p-ring-fill" cx="100" cy="100" r="90"/>
+        </svg>
+        <div class="p-dial-text">
+          <div class="p-big" id="p-big"></div>
+          <div class="p-unit" id="p-unit"></div>
+        </div>
+      </div>
+      <p class="p-cue" id="p-cue"></p>
+      <a class="p-demo" id="p-demo" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+        Watch demo
+      </a>
+    </div>
+
+    <footer class="p-bottom">
+      <div class="p-next" id="p-next">
+        <span class="p-next-label">Next up</span>
+        <span class="p-next-name" id="p-next-name"></span>
+        <span class="p-next-detail" id="p-next-detail"></span>
+      </div>
+      <div class="p-actions">
+        <button class="btn btn-secondary" id="p-skip">Skip</button>
+        <button class="btn btn-primary btn-xl" id="p-done">Done</button>
+      </div>
+    </footer>
+
+    <button class="p-paused" id="p-paused" hidden>
+      <span class="p-paused-title">Paused</span>
+      <span class="p-paused-sub">Tap anywhere to resume</span>
+    </button>
+  </div>
+
+  <!-- Completion moment: ring closes, check draws, count ticks up. Silent, under 2 s. -->
+  <div class="complete" id="complete" hidden>
+    <div class="c-inner">
+      <svg class="c-ring" viewBox="0 0 200 200" aria-hidden="true">
+        <circle class="c-ring-track" cx="100" cy="100" r="88"/>
+        <circle class="c-ring-fill" cx="100" cy="100" r="88"/>
+        <path class="c-check" d="M64 102 L90 128 L138 78"/>
+      </svg>
+      <h1 class="c-title" id="c-title">Workout done</h1>
+      <p class="c-sub" id="c-sub"></p>
+      <div class="c-stat">
+        <div class="c-num"><span id="c-count">0</span><span class="c-of" id="c-of"></span></div>
+        <div class="c-label">workouts this week</div>
+      </div>
+    </div>
+    <div class="c-actions">
+      <button class="btn btn-secondary" id="c-stretch">Stretch</button>
+      <button class="btn btn-primary btn-xl" id="c-done">Done</button>
+    </div>
+  </div>
+
+  <div class="flash" id="flash" aria-hidden="true"></div>
+  <div class="sheet-root" id="sheet-root" hidden></div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="db.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
