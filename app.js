@@ -1,11 +1,12 @@
 'use strict';
 
 /* ==========================================================================
-   Workout PWA, Phase 1 (core)
-   Plan generator · workout player · completion logging · settings
+   Workout PWA, Phase 2 (adaptation)
+   Plan generator · workout player · logging · check-in · progression · settings
+   The adaptation rules themselves live in adapt.js.
    ========================================================================== */
 
-const APP_VERSION = '1.0.2';
+const APP_VERSION = '2.0.0';
 
 const DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DAY_LETTER = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
@@ -20,12 +21,12 @@ const ACCENTS = [
 
 const DEFAULT_SETTINGS = {
   key: 'app',
-  schemaVersion: 1,
+  schemaVersion: 2,
   equipment: ['db5', 'db10', 'db20', 'trx', 'jband', 'loopband', 'medball6', 'chair', 'bodyweight'],
   quietMode: true,            // always on; shown locked in Settings
   workoutDays: [1, 3, 5],     // Mon / Wed / Fri
   finisherDays: [1, 5],       // Mon / Fri (work-from-home days)
-  phase: 1,
+  phase: 1,                   // training phase 1–3: 3, 4, then 5 days a week
   accent: 'orange',
   sound: true,
   flash: true,
@@ -49,11 +50,33 @@ const START_PROGRESSION = {
   armCare:      { rungIndex: 0, repTarget: 12, secondsTarget: 30 },  // J-band routine
 };
 
-// Phase 1: every workout day is Full Body, A and B alternating.
-// Both include a push movement (chest every session).
+// Training phase 1: every workout day is Full Body, A and B alternating.
+// Phases 2–3 rotate Upper → Lower → Full Body + Conditioning, so back-to-back days never repeat a type.
+// Every day type includes a push movement (chest every session).
+const ARM_CARE_A = ['band-er-ir', 'jband-reverse-fly', 'prone-ytw'];
+const ARM_CARE_B = ['band-er-ir', 'jband-reverse-fly', 'scap-pushup'];
 const DAY_TYPES = {
-  fullA: { name: 'Full Body A', circuit: ['push', 'squat', 'pull', 'core'], armCare: ['band-er-ir', 'jband-reverse-fly', 'prone-ytw'] },
-  fullB: { name: 'Full Body B', circuit: ['push', 'hinge', 'pull', 'chestFly'], armCare: ['band-er-ir', 'jband-reverse-fly', 'scap-pushup'] },
+  fullA: { name: 'Full Body A', circuit: ['push', 'squat', 'pull', 'core'], armCare: ARM_CARE_A },
+  fullB: { name: 'Full Body B', circuit: ['push', 'hinge', 'pull', 'chestFly'], armCare: ARM_CARE_B },
+  upper: { name: 'Upper Body', circuit: ['push', 'chestFly', 'pull', 'core'], armCare: ARM_CARE_A },
+  lower: { name: 'Lower Body', circuit: ['squat', 'hinge', 'kneeSupport', 'push'], armCare: ARM_CARE_B },
+  fullC: { name: 'Full Body + Conditioning', circuit: ['push', 'squat', 'pull', 'core'], armCare: ARM_CARE_B, alwaysFinisher: true },
+};
+const ROTATION = ['upper', 'lower', 'fullC'];
+
+// SPEC.md → Equipment and schedule: the 3 → 5 day ramp.
+const PHASE_DAYS = { 1: [1, 3, 5], 2: [0, 1, 3, 5], 3: [0, 1, 3, 4, 5] };
+
+// One-time changes the check-in queues for the next workout, plus ramp state.
+const DEFAULT_ADAPT = {
+  key: 'adapt',
+  shortNext: false,     // "No time" → drop one circuit exercise and the finisher
+  lightNext: false,     // 2 Hard/Brutal in a row → −2 reps, no finisher
+  lightLegsNext: false, // knees 2+ twice → −2 reps on leg moves
+  kneeSwap: [],         // lower-body ladders to swap for Knee support next time
+  restDates: [],        // rest days added after a Brutal session
+  phaseSince: null,     // when the current training phase started; earlier weeks never count toward the ramp
+  rampDismissed: null,  // week start of the last "Not yet"
 };
 
 // Session length caps. Rounds drop from 3 to 2 to fit; nothing is ever padded.
@@ -75,6 +98,8 @@ const ICONS = {
   lock: '<svg viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
   volume: '<svg viewBox="0 0 24 24"><path d="M11 4.7a.7.7 0 0 0-1.2-.5L6.4 7.6A1.4 1.4 0 0 1 5.4 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.4a1.4 1.4 0 0 1 1 .4l3.4 3.4a.7.7 0 0 0 1.2-.5z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.4 18.4a9 9 0 0 0 0-12.7"/></svg>',
   history: '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>',
+  levelUp: '<svg viewBox="0 0 24 24"><path d="m17 11-5-5-5 5"/><path d="m17 18-5-5-5 5"/></svg>',
+  arrowDown: '<svg viewBox="0 0 24 24"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg>',
   utensils: '<svg viewBox="0 0 24 24"><path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/></svg>',
 };
 
@@ -85,6 +110,8 @@ const S = {
   ladders: {},       // ladderId → ladder
   settings: null,
   progression: {},   // ladderId → progression record
+  adapt: null,       // DEFAULT_ADAPT shape, stored in settings under 'adapt'
+  lastLog: null,     // the log the completion screen is showing
   tab: 'today',
   todayKey: null,
 };
@@ -112,6 +139,9 @@ function fmtClock(sec) { sec = Math.max(0, Math.ceil(sec)); return sec >= 60 ? `
 
 function workoutDays() { return (S.settings.workoutDays || []).filter(d => d !== SATURDAY).sort(); }
 function isWorkoutDay(dow) { return workoutDays().includes(dow); }
+// A rest day added after a Brutal session.
+function isForcedRest(dKey) { return (S.adapt?.restDates || []).includes(dKey); }
+function isPlannedDay(dKey) { return isWorkoutDay(parseKey(dKey).getDay()) && !isForcedRest(dKey); }
 
 function toast(msg) {
   const t = $('#toast');
@@ -171,6 +201,15 @@ function isHidden(ladderId, exId, today) {
   return !!until && until > today;
 }
 
+// A different usable rung than `avoid` (easier first), for a second move from the same ladder.
+function altRung(ladderId, avoid, today) {
+  const ladder = S.ladders[ladderId];
+  const ok = i => i !== avoid && usable(ladder.rungs[i]) && !isHidden(ladderId, ladder.rungs[i].id, today);
+  for (let i = avoid - 1; i >= 0; i--) if (ok(i)) return i;
+  for (let i = avoid + 1; i < ladder.rungs.length; i++) if (ok(i)) return i;
+  return -1;
+}
+
 // Current rung if usable; otherwise the nearest easier rung, then the nearest harder one.
 function pickRung(ladderId, today) {
   const ladder = S.ladders[ladderId];
@@ -198,11 +237,19 @@ function itemFor(ex, prog) {
    ========================================================================== */
 async function nextDayType(beforeDate) {
   const logs = await DB.getAll('logs');
+  // Any workout with sets done moves the rotation along, including one ended early.
   const last = logs
-    .filter(l => l.status === 'completed' && l.date < beforeDate)
+    .filter(l => (l.status === 'completed' || l.setsDone > 0) && l.date < beforeDate)
     .sort((a, b) => (a.finishedAt || '').localeCompare(b.finishedAt || ''))
     .pop();
-  return last?.dayType === 'fullA' ? 'fullB' : 'fullA';
+  if ((S.settings.phase || 1) === 1) return last?.dayType === 'fullA' ? 'fullB' : 'fullA';
+  return ROTATION[(ROTATION.indexOf(last?.dayType) + 1) % ROTATION.length];
+}
+
+const lowerBody = item => !!S.ladders[item.ladderId]?.lowerBody;
+function lighten(item) {
+  if (item.unit === 'seconds') item.seconds = Math.max(15, item.seconds - 10);
+  else item.reps = Math.max(5, item.reps - 2);
 }
 
 async function generateWorkout(dKey, { scheduled = true } = {}) {
@@ -219,11 +266,47 @@ async function generateWorkout(dKey, { scheduled = true } = {}) {
     items: S.ex.warmup.filter(usable).map(w => itemFor(w)),
   });
 
+  // One-time changes from the last check-ins
+  const ad = S.adapt;
+  const mods = { short: !!ad.shortNext, light: !!ad.lightNext, lightLegs: false, kneeSwap: [] };
+  const notes = [];
+
+  // A pain flag on a lower-body move swaps that slot for Knee support. If the day already has
+  // Knee support, the swapped slot gets a different rung, marked alt so it doesn't count for progress.
+  const native = new Set(tpl.circuit);
   const circuitItems = tpl.circuit.map(lid => {
-    const idx = pickRung(lid, dKey);
+    const swap = (ad.kneeSwap || []).includes(lid) && !!S.ladders.kneeSupport;
+    const useLid = swap ? 'kneeSupport' : lid;
+    let idx = pickRung(useLid, dKey);
+    const alt = swap && native.has('kneeSupport');
+    if (alt && idx >= 0) idx = altRung(useLid, idx, dKey);
     if (idx < 0) return null;
-    return itemFor(S.exById[S.ladders[lid].rungs[idx].id], S.progression[lid]);
+    const item = itemFor(S.exById[S.ladders[useLid].rungs[idx].id], S.progression[useLid]);
+    if (swap) {
+      item.swappedFrom = lid;
+      mods.kneeSwap.push(lid);
+      notes.push(`Knee support in place of ${S.ladders[lid].pattern.toLowerCase()} after a pain flag`);
+    }
+    if (alt) item.alt = true;
+    return item;
   }).filter(Boolean);
+
+  // "No time": drop the last circuit exercise that isn't the push (chest stays every session).
+  if (mods.short && circuitItems.length > 2) {
+    let drop = -1;
+    circuitItems.forEach((it, i) => { if (it.ladderId !== 'push') drop = i; });
+    if (drop >= 0) circuitItems.splice(drop, 1);
+    notes.push('Shorter today: one less exercise and no finisher');
+  }
+  const legsDay = circuitItems.some(lowerBody);
+  if (mods.light) {
+    circuitItems.forEach(lighten);
+    notes.push('Lighter today after two hard sessions');
+  } else if (ad.lightLegsNext && legsDay) {
+    circuitItems.filter(lowerBody).forEach(lighten);
+    notes.push('Easier on the legs after sore knees');
+  }
+  mods.lightLegs = !!ad.lightLegsNext && legsDay; // a lighter session covers the legs too
   const circuit = {
     kind: 'circuit', label: 'Main', rounds: MAX_ROUNDS,
     restSec: st.transitionSec, restBetweenRoundsSec: st.restBetweenRoundsSec,
@@ -231,7 +314,7 @@ async function generateWorkout(dKey, { scheduled = true } = {}) {
   };
   blocks.push(circuit);
 
-  const hasFinisher = (st.finisherDays || []).includes(dow);
+  const hasFinisher = (tpl.alwaysFinisher || (st.finisherDays || []).includes(dow)) && !mods.short && !mods.light;
   if (hasFinisher) {
     const idx = pickRung('conditioning', dKey);
     if (idx >= 0) {
@@ -269,8 +352,16 @@ async function generateWorkout(dKey, { scheduled = true } = {}) {
     scheduled,
     hasFinisher: blocks.some(b => b.kind === 'finisher'),
     blocks: blocks.filter(b => b.items.length),
+    mods,
+    notes,
     createdAt: new Date().toISOString(),
   };
+  // Used up: these applied to this workout. invalidateTodayPlan puts them back if the plan is rebuilt.
+  S.adapt.shortNext = false;
+  S.adapt.lightNext = false;
+  if (mods.lightLegs) S.adapt.lightLegsNext = false;
+  S.adapt.kneeSwap = (S.adapt.kneeSwap || []).filter(l => !mods.kneeSwap.includes(l));
+  await saveAdapt();
   workout.estSec = estimateSec(workout, false);
   workout.estStretchSec = estimateSec({ blocks: workout.blocks.filter(b => b.kind === 'stretch') }, true, true);
   await DB.put('workouts', workout);
@@ -280,7 +371,7 @@ async function generateWorkout(dKey, { scheduled = true } = {}) {
 async function getWorkout(dKey) {
   const w = await DB.get('workouts', dKey);
   if (w) return w;
-  if (isWorkoutDay(parseKey(dKey).getDay())) return generateWorkout(dKey);
+  if (isPlannedDay(dKey)) return generateWorkout(dKey);
   return null;
 }
 
@@ -346,8 +437,23 @@ async function loadSettings() {
   S.settings = { ...DEFAULT_SETTINGS, ...(saved || {}) };
   S.settings.workoutDays = (S.settings.workoutDays || []).filter(d => d !== SATURDAY);
   S.settings.quietMode = true;
-  if (!saved) await DB.put('settings', S.settings);
+  if (!saved || (saved.schemaVersion || 1) < DEFAULT_SETTINGS.schemaVersion) {
+    S.settings.schemaVersion = DEFAULT_SETTINGS.schemaVersion; // 1 → 2: new defaults merged in above
+    await DB.put('settings', S.settings);
+  }
 }
+
+async function loadAdapt() {
+  const saved = await DB.get('settings', 'adapt');
+  S.adapt = { ...DEFAULT_ADAPT, ...(saved || {}) };
+  // Weeks before Phase 2 was installed only have unrated logs, so they never count toward the ramp.
+  if (!S.adapt.phaseSince) S.adapt.phaseSince = dateKey();
+  const cutoff = dateKey(addDays(new Date(), -60));
+  S.adapt.restDates = (S.adapt.restDates || []).filter(d => d >= cutoff);
+  await saveAdapt();
+}
+
+function saveAdapt() { return DB.put('settings', { ...S.adapt, key: 'adapt' }); }
 
 async function saveSettings(patch) {
   Object.assign(S.settings, patch);
@@ -366,6 +472,15 @@ async function invalidateTodayPlan() {
   const logs = await logsFor(today);
   if (logs.length) return;
   const existing = await DB.get('workouts', today);
+  if (existing?.mods) {
+    // Give back the one-time changes this plan used, so the rebuilt plan gets them too.
+    const m = existing.mods;
+    S.adapt.shortNext ||= !!m.short;
+    S.adapt.lightNext ||= !!m.light;
+    S.adapt.lightLegsNext ||= !!m.lightLegs;
+    S.adapt.kneeSwap = [...new Set([...(S.adapt.kneeSwap || []), ...(m.kneeSwap || [])])];
+    await saveAdapt();
+  }
   await DB.delete('workouts', today);
   if (existing && !existing.scheduled) await generateWorkout(today, { scheduled: false });
 }
@@ -391,6 +506,25 @@ async function loadProgression() {
   }
 }
 
+// Full weeks since the current training phase began, oldest first, for Adapt.rampStatus.
+async function rampWeeks() {
+  const logs = await DB.getAll('logs');
+  const thisWeek = weekStart();
+  const weeks = [];
+  for (let n = 8; n >= 1; n--) {
+    const start = addDays(thisWeek, -7 * n);
+    if (dateKey(start) < S.adapt.phaseSince) continue;
+    const keys = Array.from({ length: 7 }, (_, i) => dateKey(addDays(start, i)));
+    const inWeek = logs.filter(l => keys.includes(l.date));
+    weeks.push({
+      planned: keys.filter(isPlannedDay).length,
+      done: new Set(inWeek.filter(l => l.status === 'completed').map(l => l.date)).size,
+      ratings: inWeek.map(l => l.checkIn?.rating).filter(Boolean),
+    });
+  }
+  return weeks;
+}
+
 async function logsFor(dKey) {
   return (await DB.getAll('logs')).filter(l => l.date === dKey);
 }
@@ -400,7 +534,7 @@ async function weekSummary(ref = new Date()) {
   const keys = Array.from({ length: 7 }, (_, i) => dateKey(addDays(start, i)));
   const logs = (await DB.getAll('logs')).filter(l => l.status === 'completed' && keys.includes(l.date));
   const doneDates = new Set(logs.map(l => l.date));
-  return { keys, doneDates, planned: workoutDays().length, done: doneDates.size };
+  return { keys, doneDates, planned: keys.filter(isPlannedDay).length, done: doneDates.size };
 }
 
 /* ==========================================================================
@@ -538,8 +672,9 @@ async function renderToday() {
   const session = await DB.get('settings', 'session');
   const todaysLogs = await logsFor(today);
   const doneToday = todaysLogs.some(l => l.status === 'completed');
+  const pending = pendingCheckIn(todaysLogs);
   let workout = await DB.get('workouts', today);
-  if (!workout && isWorkoutDay(dow)) workout = await generateWorkout(today);
+  if (!workout && isPlannedDay(today)) workout = await generateWorkout(today);
 
   let hero = '';
   let dock = '';
@@ -557,7 +692,9 @@ async function renderToday() {
         </div>
         ${workout ? `<button class="text-btn" data-action="start">${session && session.workoutId === today ? 'Resume extra session' : 'Train again'}</button>` : ''}
       </div>`;
-    if (!log.stretchDone && workout?.blocks.some(b => b.kind === 'stretch')) {
+    if (pending) {
+      dock = `<button class="btn btn-primary btn-xl" data-action="checkin">Check in</button>`;
+    } else if (!log.stretchDone && workout?.blocks.some(b => b.kind === 'stretch')) {
       dock = `<button class="btn btn-secondary btn-xl" data-action="stretch">Stretch 5 min</button>`;
     }
   } else if (workout) {
@@ -579,6 +716,8 @@ async function renderToday() {
           <span class="chip">${ICONS.repeat}<span class="num">${circuit?.rounds || 0} rounds</span></span>
           ${finisher ? `<span class="chip">${ICONS.zap}Finisher</span>` : ''}
         </div>
+        ${(workout.notes || []).map(n => `<div class="hero-note">${esc(n)}</div>`).join('')}
+        ${pending ? `<button class="text-btn" data-action="checkin">Check in on the workout you ended early</button>` : ''}
         <ul class="ex-list">
           ${circuit ? `<li class="ex-block">Main circuit</li>${exRows(circuit.items)}` : ''}
           ${finisher ? `<li class="ex-block">Finisher · 30s on / 30s off</li>${exRows(finisher.items)}` : ''}
@@ -592,7 +731,7 @@ async function renderToday() {
       <div class="card hero hero-rest">
         <div class="rest-icon">${ICONS.moon}</div>
         <div class="hero-title">Rest day</div>
-        <p>Walk, stretch, or nothing.</p>
+        <p>${isForcedRest(today) && isWorkoutDay(dow) ? 'Recovering from a Brutal session. Walk, stretch, or nothing.' : 'Walk, stretch, or nothing.'}</p>
         ${next ? `<p style="margin-top:10px">Next workout: <strong style="color:var(--text)">${esc(next)}</strong></p>` : ''}
         <button class="text-btn" data-action="train-anyway">Train anyway</button>
       </div>`;
@@ -608,7 +747,7 @@ async function renderToday() {
       <div class="week">
         ${wk.keys.map((k, i) => {
           const cls = ['week-day'];
-          if (isWorkoutDay(i)) cls.push('planned');
+          if (isPlannedDay(k)) cls.push('planned');
           if (wk.doneDates.has(k)) cls.push('done');
           if (k === today) cls.push('today');
           if (i === SATURDAY) cls.push('off');
@@ -617,16 +756,47 @@ async function renderToday() {
       </div>
     </div>`;
 
-  $('#view-today').innerHTML = largeTitle('Today', fmtLongDate(now)) + hero + `<div style="height:12px"></div>` + weekHtml;
+  $('#view-today').innerHTML = largeTitle('Today', fmtLongDate(now)) + await rampCard() + hero + `<div style="height:12px"></div>` + weekHtml;
   setDock(dock);
 }
 
 function nextWorkoutDay(from) {
   for (let i = 1; i <= 7; i++) {
     const d = addDays(from, i);
-    if (isWorkoutDay(d.getDay())) return i === 1 ? 'Tomorrow' : DAY_SHORT[d.getDay()];
+    if (isPlannedDay(dateKey(d))) return i === 1 ? 'Tomorrow' : DAY_SHORT[d.getDay()];
   }
   return null;
+}
+
+// Today's newest log that still wants a check-in. Phase 1 logs (no schema) never ask.
+function pendingCheckIn(todaysLogs) {
+  return todaysLogs
+    .filter(l => l.schema >= 2 && !l.checkIn && (l.status === 'completed' || l.setsDone > 0))
+    .sort((a, b) => (a.finishedAt || '').localeCompare(b.finishedAt || ''))
+    .pop() || null;
+}
+
+const daysText = days => days.map(d => DAY_SHORT[d]).join(', ');
+
+async function rampCard() {
+  const phase = S.settings.phase || 1;
+  const ramp = Adapt.rampStatus(await rampWeeks(), phase);
+  if (!ramp.offer || S.adapt.rampDismissed === dateKey(weekStart())) return '';
+  const to = ramp.offer === 'up' ? phase + 1 : phase - 1;
+  const days = PHASE_DAYS[to];
+  const [title, body, yes] = ramp.offer === 'up'
+    ? [`You earned ${days.length} days a week`, `Two strong weeks in a row. New days: ${daysText(days)}.`, 'Move up']
+    : [`Back to ${days.length} days a week?`, `Two rough weeks in a row. Dropping back keeps it doable: ${daysText(days)}.`, 'Drop back'];
+  return `
+    <div class="card hero ramp-card">
+      <div class="hero-kicker">${ramp.offer === 'up' ? 'Level up' : 'Check in'}</div>
+      <div class="ramp-title">${esc(title)}</div>
+      <p class="muted">${esc(body)}</p>
+      <div class="ramp-actions">
+        <button class="btn btn-secondary" data-action="ramp-dismiss">Not yet</button>
+        <button class="btn btn-primary" data-action="ramp-accept" data-phase="${to}">${yes}</button>
+      </div>
+    </div>`;
 }
 
 /* ---------- History ---------- */
@@ -648,11 +818,29 @@ async function renderHistory() {
         <div class="row-main">
           <div class="row-title">${esc(l.name || DAY_TYPES[l.dayType]?.name || 'Workout')}</div>
           <div class="row-sub num">${esc(fmtShortDate(parseKey(l.date)))} · ${fmtMinutes(l.durationSec)} · ${l.setsDone}/${l.setsPlanned} sets${l.stretchDone ? ' · stretch' : ''}</div>
+          ${checkInText(l) ? `<div class="row-sub">${esc(checkInText(l))}</div>` : ''}
+          ${levelUpText(l) ? `<div class="row-sub levelup-line">${ICONS.levelUp}${esc(levelUpText(l))}</div>` : ''}
         </div>
         <span class="pill ${l.status === 'completed' ? 'win' : 'caution'}">${l.status === 'completed' ? 'Done' : 'Partial'}</span>
       </div>`).join('') + `</div>`;
   }
   $('#view-history').innerHTML = html;
+}
+
+// "Just right · Knees fine", or "" for a log with no check-in (every Phase 1 log).
+function checkInText(log) {
+  const ci = log.checkIn;
+  if (!ci) return '';
+  const r = ci.rating ? Adapt.RATINGS[ci.rating] : '';
+  const how = ci.finishedAll === false ? `Not all${r ? `, rest ${r.toLowerCase()}` : ''}` : r;
+  const knees = ci.knees != null ? `Knees ${Adapt.KNEES[ci.knees].toLowerCase()}` : '';
+  return [how, knees].filter(Boolean).join(' · ');
+}
+
+const exName = id => S.exById[id]?.name || id;
+function levelUpText(log) {
+  const ups = (log.checkIn?.applied || []).filter(c => c.change === 'rungUp');
+  return ups.map(c => `${exName(c.from)} → ${exName(c.to)}`).join(', ');
 }
 
 /* ---------- Food (Phase 5) ---------- */
@@ -671,9 +859,22 @@ function switchRow(title, setting, { sub = '', checked, disabled = false, data =
     </label>`;
 }
 
-function renderMe() {
+async function renderMe() {
   const st = S.settings;
   const days = workoutDays();
+  const phase = st.phase || 1;
+  const ramp = Adapt.rampStatus(await rampWeeks(), phase);
+  const today = dateKey();
+  const levels = S.ex.ladders.map(l => {
+    const idx = pickRung(l.id, today);
+    if (idx < 0) return '';
+    const ex = S.exById[l.rungs[idx].id];
+    const item = itemFor(ex, S.progression[l.id]);
+    const hidden = Object.entries(S.progression[l.id]?.hidden || {}).filter(([, until]) => until > today)
+      .map(([id, until]) => `${exName(id)} hidden until ${fmtShortDate(parseKey(until))}`);
+    const sub = [`${ex.name}${l.id === 'armCare' ? '' : ` · rung ${idx + 1} of ${l.rungs.length}`}`, ...hidden].join(' · ');
+    return `<div class="row"><div class="row-main"><div class="row-title">${esc(l.pattern)}</div><div class="row-sub">${esc(sub)}</div></div><span class="row-value num">${esc(l.id === 'conditioning' ? '30s on' : targetText(item))}</span></div>`;
+  }).join('');
   const html = largeTitle('Me') + `
     <div class="section-label">Workout days</div>
     <div class="group">
@@ -721,6 +922,21 @@ function renderMe() {
         ${ACCENTS.map(a => `<button class="swatch ${st.accent === a.id ? 'on' : ''}" data-accent="${a.id}" aria-label="${esc(a.name)}" style="background:${a.color}"></button>`).join('')}
       </div>
     </div>
+
+    <div class="section-label">Training</div>
+    <div class="group">
+      <div class="row">
+        <div class="row-main">
+          <div class="row-title">Phase ${phase} of 3 · ${PHASE_DAYS[phase].length} days a week</div>
+          <div class="row-sub">${phase < 3 ? `${ramp.earned} of 2 strong weeks toward ${PHASE_DAYS[phase + 1].length} days` : 'Top phase'}</div>
+        </div>
+      </div>
+    </div>
+    <div class="section-foot">A strong week: 80%+ of workouts done and an average rating of Just right or easier.</div>
+
+    <div class="section-label">Current levels</div>
+    <div class="group">${levels}</div>
+    <div class="section-foot">Easy adds a rep, Too easy adds two. Past the top of the range, the next exercise up starts at the bottom.</div>
 
     <div class="section-label">Data</div>
     <div class="group">
@@ -1061,10 +1277,11 @@ async function onClose() {
     closePlayer();
     return showTab(S.tab);
   }
-  if (anyDone) await saveLog('partial');
+  const log = anyDone ? await saveLog('partial') : null;
   await DB.delete('settings', 'session');
   closePlayer();
-  showTab('today');
+  await showTab('today');
+  if (log) openCheckIn(log, { partial: true });
 }
 
 function saveSession() {
@@ -1110,6 +1327,8 @@ function buildLog(status) {
       target: step.item.unit === 'seconds' ? step.item.seconds : step.item.reps,
       unit: step.item.unit,
       perSide: step.item.perSide,
+      alt: !!step.item.alt,
+      swappedFrom: step.item.swappedFrom || null,
       setsPlanned: 0, setsDone: 0, setsSkipped: 0,
     };
     const set = sets[step.setKey] ||= { ex, done: false, skipped: false, counted: false };
@@ -1139,7 +1358,8 @@ function buildLog(status) {
     setsDone: main.reduce((n, e) => n + e.setsDone, 0),
     exercises: list,
     stretchDone: list.some(e => e.block === 'stretch' && e.setsDone > 0),
-    checkIn: null, // Phase 2
+    schema: 2,     // logs from Phase 1 have no schema and never ask for a check-in
+    checkIn: null, // set by the check-in; null means no rating
   };
 }
 
@@ -1159,6 +1379,7 @@ async function markStretchDone(logId) {
 
 /* ---------- Completion moment ---------- */
 function showCompletion(log, fromCount, toCount, planned) {
+  S.lastLog = log;
   const el = $('#complete');
   $('#c-title').textContent = 'Workout done';
   $('#c-sub').textContent = `${log.name} · ${fmtMinutes(log.durationSec)}`;
@@ -1189,6 +1410,184 @@ function hideCompletion() {
   const el = $('#complete');
   el.hidden = true;
   el.classList.remove('play');
+}
+
+/* ==========================================================================
+   Check-in: one question per screen, under 30 seconds
+   ========================================================================== */
+const CI = { log: null, step: null, trail: [], partial: false, finishedAll: null, rating: null, reasons: {}, knees: null };
+
+function ciPath() {
+  const path = CI.partial ? [] : ['finished'];
+  if (CI.finishedAll === false && Adapt.unfinishedEntries(CI.log).length) {
+    path.push('reasons');
+    if (ciFinishedCount()) path.push('rest');
+  } else {
+    path.push('rating');
+  }
+  path.push('knees');
+  return path;
+}
+
+function ciFinishedCount() {
+  return Adapt.ladderEntries(CI.log).length - Adapt.unfinishedEntries(CI.log).length;
+}
+
+function openCheckIn(log, { partial = false } = {}) {
+  Object.assign(CI, { log, trail: [], partial, finishedAll: partial ? false : null, rating: null, reasons: {}, knees: null });
+  hideCompletion();
+  const el = $('#checkin');
+  el.hidden = false;
+  el.classList.remove('is-in'); void el.offsetWidth; el.classList.add('is-in');
+  CI.step = null;
+  ciGo(ciPath()[0], false);
+}
+
+function closeCheckIn() { $('#checkin').hidden = true; }
+
+function ciGo(step, remember = true) {
+  if (remember && CI.step) CI.trail.push(CI.step);
+  CI.step = step;
+  renderCheckIn();
+}
+
+const RATE_CLASS = ['', 'easy', 'easy', 'right', 'hard', 'brutal'];
+
+function ratingButtons() {
+  return `<div class="ci-list">${[1, 2, 3, 4, 5].map(i => `
+    <button class="ci-rate ${RATE_CLASS[i]}" data-ci-rating="${i}"><span class="ci-rate-num num">${i}</span><span>${Adapt.RATINGS[i]}</span></button>`).join('')}</div>`;
+}
+
+function renderCheckIn() {
+  const path = ciPath();
+  const at = path.indexOf(CI.step);
+  $('#ci-dots').innerHTML = path.map((_, i) => `<span class="${i <= at ? 'on' : ''}"></span>`).join('');
+  $('#ci-back').style.visibility = CI.trail.length ? 'visible' : 'hidden';
+
+  const q = (title, sub = '') => `<h1 class="ci-q">${esc(title)}</h1>${sub ? `<p class="ci-sub">${esc(sub)}</p>` : ''}`;
+  let html = '';
+  if (CI.step === 'finished') {
+    const unfinished = Adapt.unfinishedEntries(CI.log);
+    const skipped = unfinished.reduce((n, e) => n + e.setsPlanned - e.setsDone, 0);
+    html = q('Did you finish everything?', skipped ? `${skipped} set${skipped === 1 ? '' : 's'} skipped` : '') + `
+      <div class="ci-list">
+        <button class="ci-choice ${skipped ? '' : 'suggest'}" data-ci-finished="yes">Yes</button>
+        <button class="ci-choice ${skipped ? 'suggest' : ''}" data-ci-finished="no">Not all</button>
+      </div>`;
+  } else if (CI.step === 'rating') {
+    html = q('How hard was it?') + ratingButtons();
+  } else if (CI.step === 'reasons') {
+    html = q('Which ones, and why?', 'Pick a reason for each one you can. Skip any you like.') +
+      `<div class="ci-list">${Adapt.unfinishedEntries(CI.log).map(e => `
+        <div class="ci-ex">
+          <div class="ci-ex-name">${esc(exName(e.exerciseId))}</div>
+          <div class="ci-ex-sub num">${e.setsDone} of ${e.setsPlanned} sets</div>
+          <div class="ci-chips">${Object.entries(Adapt.REASONS).map(([k, label]) => `
+            <button class="ci-chip ${CI.reasons[e.exerciseId] === k ? 'on' : ''}" data-ci-reason="${k}" data-ex="${esc(e.exerciseId)}">${label}</button>`).join('')}
+          </div>
+        </div>`).join('')}</div>
+      <button class="btn btn-primary btn-xl ci-next" data-ci-next>Continue</button>`;
+  } else if (CI.step === 'rest') {
+    const n = ciFinishedCount();
+    html = q('How was the rest?', `The ${n} exercise${n === 1 ? '' : 's'} you finished`) + ratingButtons();
+  } else if (CI.step === 'knees') {
+    html = q('Knees today?') + `<div class="ci-list">${Adapt.KNEES.map((k, i) => `
+      <button class="ci-choice knee-${i}" data-ci-knees="${i}">${k}</button>`).join('')}</div>`;
+  }
+  const body = $('#ci-body');
+  body.innerHTML = html;
+  body.classList.remove('step-in'); void body.offsetWidth; body.classList.add('step-in');
+  body.scrollTop = 0;
+}
+
+function onCheckInClick(e) {
+  const t = e.target.closest('button');
+  if (!t) return;
+  if (t.id === 'ci-back') { if (CI.trail.length) { CI.step = CI.trail.pop(); renderCheckIn(); } return; }
+  if (t.id === 'ci-later') {
+    closeCheckIn();
+    showTab('today');
+    return toast('You can check in from Today');
+  }
+  if (t.dataset.ciFinished) {
+    CI.finishedAll = t.dataset.ciFinished === 'yes';
+    if (CI.finishedAll) CI.reasons = {};
+    return ciGo(ciPath()[ciPath().indexOf('finished') + 1]);
+  }
+  if (t.dataset.ciReason) {
+    const id = t.dataset.ex;
+    CI.reasons[id] = CI.reasons[id] === t.dataset.ciReason ? undefined : t.dataset.ciReason;
+    if (!CI.reasons[id]) delete CI.reasons[id];
+    t.parentElement.querySelectorAll('.ci-chip').forEach(c => c.classList.toggle('on', c === t && !!CI.reasons[id]));
+    return;
+  }
+  if (t.hasAttribute('data-ci-next')) {
+    if (!ciFinishedCount()) CI.rating = null;
+    return ciGo(ciPath()[ciPath().indexOf('reasons') + 1]);
+  }
+  if (t.dataset.ciRating) { CI.rating = Number(t.dataset.ciRating); return ciGo('knees'); }
+  if (t.dataset.ciKnees) { CI.knees = Number(t.dataset.ciKnees); return saveCheckIn(); }
+}
+
+async function saveCheckIn() {
+  // Re-read: the stretch may have updated this log since the check-in opened.
+  const log = (await DB.get('logs', CI.log.id)) || CI.log;
+  const finishedAll = CI.finishedAll !== false;
+  const checkIn = {
+    v: 1,
+    finishedAll,
+    rating: (finishedAll || ciFinishedCount()) ? CI.rating : null,
+    reasons: finishedAll ? {} : { ...CI.reasons },
+    knees: CI.knees,
+    at: new Date().toISOString(),
+  };
+  const earlier = (await DB.getAll('logs'))
+    .filter(l => l.id !== log.id && l.checkIn)
+    .sort((a, b) => a.checkIn.at.localeCompare(b.checkIn.at));
+  const copy = o => JSON.parse(JSON.stringify(o));
+  const res = Adapt.applyCheckIn({
+    log, checkIn, earlier,
+    progression: copy(S.progression), adapt: copy(S.adapt),
+    ladders: S.ladders, exById: S.exById, usable,
+    dayTypeLadders: DAY_TYPES[log.dayType]?.circuit || [],
+  });
+  checkIn.applied = res.applied;
+  log.checkIn = checkIn;
+  await DB.put('logs', log);
+  for (const lid of res.changed) {
+    const rec = res.progression[lid];
+    const mine = res.applied.filter(c => c.ladderId === lid);
+    if (mine.length) rec.history = [...(rec.history || []), { date: log.date, logId: log.id, changes: mine }].slice(-50);
+    rec.updatedAt = checkIn.at;
+    S.progression[lid] = rec;
+    await DB.put('progression', rec);
+  }
+  S.adapt = res.adapt;
+  await saveAdapt();
+
+  closeCheckIn();
+  await showTab('today');
+  const ups = res.applied.filter(c => c.change === 'rungUp');
+  if (ups.length) showLevelUp(ups);
+  else toast(res.applied.length ? 'Saved. Next workout adjusted.' : 'Saved');
+}
+
+/* ---------- Level up: old → new exercise. Silent, under 2 s. ---------- */
+function showLevelUp(ups) {
+  $('#lu-inner').innerHTML = `
+    <div class="lu-badge">${ICONS.levelUp}</div>
+    <h1 class="lu-title">Level up</h1>
+    ${ups.map(c => `
+      <div class="lu-pair">
+        <div class="lu-old">${esc(exName(c.from))}</div>
+        <div class="lu-arrow">${ICONS.arrowDown}</div>
+        <div class="lu-new">${esc(exName(c.to))}</div>
+      </div>`).join('')}`;
+  const el = $('#levelup');
+  el.classList.remove('play');
+  el.hidden = false;
+  void el.offsetWidth;
+  el.classList.add('play');
 }
 
 /* ==========================================================================
@@ -1228,6 +1627,21 @@ function bindEvents() {
     } else if (act === 'stretch') {
       const log = (await logsFor(dateKey())).filter(l => l.status === 'completed').pop();
       startStretch(log?.id);
+    } else if (act === 'checkin') {
+      const log = pendingCheckIn(await logsFor(dateKey()));
+      if (log) openCheckIn(log, { partial: log.status === 'partial' });
+    } else if (act === 'ramp-accept') {
+      const phase = Number(e.target.closest('[data-phase]').dataset.phase);
+      S.adapt.phaseSince = dateKey();
+      S.adapt.rampDismissed = null;
+      await saveAdapt();
+      await saveSettings({ phase, workoutDays: PHASE_DAYS[phase] });
+      toast(`Phase ${phase}: ${daysText(PHASE_DAYS[phase])}`);
+      renderToday();
+    } else if (act === 'ramp-dismiss') {
+      S.adapt.rampDismissed = dateKey(weekStart());
+      await saveAdapt();
+      renderToday();
     } else if (act === 'export') {
       exportData();
     } else if (act === 'test-cue') {
@@ -1253,7 +1667,9 @@ function bindEvents() {
     if (Sound.ctx && Sound.ctx.state !== 'running') Sound.unlock();
   }, { capture: true, passive: true });
 
-  $('#c-done').addEventListener('click', () => { hideCompletion(); showTab('today'); });
+  $('#c-done').addEventListener('click', () => openCheckIn(S.lastLog));
+  $('#checkin').addEventListener('click', onCheckInClick);
+  $('#lu-done').addEventListener('click', () => { $('#levelup').hidden = true; });
   $('#c-stretch').addEventListener('click', e => {
     const logId = Number(e.currentTarget.dataset.logId);
     hideCompletion();
@@ -1279,6 +1695,7 @@ function bindEvents() {
 async function boot() {
   await DB.init();
   await loadSettings();
+  await loadAdapt();
   applyAccent();
   await loadExercises();
   await loadProgression();

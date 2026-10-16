@@ -30,25 +30,63 @@ From the first workout on the iPhone:
 
 - **Train again (v1.0.2, cache v3).** Once today's workout is done, Today shows a "Train again" link. It starts a fresh run of today's plan, with the same exercises and day type. Each extra session saves its own log, which shows in History but doesn't add to the week count. If you leave an extra session unfinished, the link reads "Resume extra session".
 
+## Phase 2: adaptation (v2.0.0, cache v4)
+
+The rules live in `adapt.js` as pure functions. `app.js` handles the screens and storage.
+
+- **Check-in after every workout.** It asks "Did you finish everything?" and then one of two paths:
+  - **Yes:** "How hard was it?" (1–5).
+  - **Not all:** "Which ones, and why?" (Too hard / Pain / No time for each unfinished exercise), then "How was the rest?" for the exercises you did finish.
+  - Both paths end with "Knees today?".
+  - A workout ended early starts at the reasons step.
+  - **Later** skips the check-in, and Today shows a **Check in** button until midnight.
+- **Progression is pure double progression, per exercise.**
+  - Easy adds 1 rep, Too easy adds 2, and timed holds move 5 s per rep.
+  - Past the top of the range, the next usable rung starts at the range minimum.
+  - 2 Too easy ratings in a row on the same exercise move it up a rung right away.
+  - Just right holds, with +1 rep on whichever exercise is lowest in its range. Hard holds.
+  - Brutal takes 2 reps off (never below the minimum) and makes the next day a rest day.
+  - Arm care progresses reps only (10–15).
+  - Conditioning has no reps, so Easy and Too easy earn 1 and 2 points. Past 2 points, it moves to the next rung.
+- **Workout-level rules:**
+  - 2 Brutal ratings in a row on the same day type take every exercise in that day type down a rung.
+  - 2 Hard or Brutal ratings in a row make the next workout lighter: 2 reps off and no finisher.
+  - "No time" drops one circuit exercise (never the push) and the finisher from the next workout.
+  - Knees rated Sore or worse on 2 check-ins in a row make the next workout with leg moves take 2 reps off those moves.
+- **Pain flags:**
+  - On a lower-body move, that slot uses the Knee support ladder in the next workout that includes it.
+  - On an upper-body move, the exercise goes down a rung.
+  - A 2nd flag on the same exercise within 4 weeks hides it for 14 days.
+- **Unrated logs:** a log with `checkIn: null` (every Phase 1 log, or a skipped check-in) never moves anything, and every "in a row" rule skips it.
+- **Day types:**
+  - Training phase 1 keeps Full Body A/B.
+  - Phases 2–3 rotate Upper → Lower → Full Body + Conditioning, which always has the finisher.
+  - Every day type has a push move.
+  - The rotation now advances after any workout with sets done, including partial ones.
+- **Ramp from 3 to 5 days:**
+  - **Strong week:** 80%+ of planned workouts done, plus an average rating of Just right or easier from at least 1 rated workout.
+  - **Moving up:** after 2 strong weeks in a row, Today offers **Move up** (to Sun/Mon/Wed/Fri, then Sun/Mon/Wed/Thu/Fri) or **Not yet**.
+  - **Dropping back:** phase 3 offers to drop back after 2 rough weeks (under 60% done, or an average of Hard or worse).
+  - **Counting:** only weeks starting on or after the current phase began count. Phase 2 starts that clock on the day it's installed.
+- **Plan notes:** Today's workout card says why a plan was changed, e.g. "Lighter today after two hard sessions".
+- **History, Level up, and Me:**
+  - History shows each rating, knees, and any level-ups.
+  - A **Level up** card shows the old → new exercise.
+  - Me shows the training phase, progress toward the next one, and each ladder's current exercise and target.
+- **Schedule correction:** the spec's 5-day schedule (Sun, Mon, Wed, Thu, Fri) leaves out **Tuesday**, not Wednesday as an earlier note said. That's fine, because back-to-back days always get different day types.
+
 ## Known issues / fix next
 
-1. **Not yet tested on a real iPhone.** Check on the phone:
-   - The tone with the ringer on silent
-   - The flash
-   - Wake lock
-   - Safe areas (notch and home bar)
-   - Add to Home Screen install
-   - Offline launch
+1. **Phase 2 not yet tested on the iPhone.**
 2. **Audio session "playback" may pause other audio.** Music or a podcast from another app may stop when the tone plays. A possible fix is a setting to switch to "ambient", which mixes with other audio but respects silent mode.
 3. **Ending early, then restarting.** After you end a workout early, Today offers "Start workout" again, and finishing that creates a second log for the same day. History will show both. A fix would merge them, or resume from the partial log.
 4. **Workouts left open past midnight.** A workout left unfinished overnight is saved as partial with a duration of 0.
-5. **Arm care is a fixed list for each day type.** It doesn't use its progression rung yet. Phase 2 should fix this.
-6. **The Knee support ladder exists but isn't used.** Phase 2 swaps it in after a pain flag.
-7. **A/B alternation only advances after a completed workout.** A partial workout doesn't flip it.
-8. **Session times are estimates,** at about 3 s per rep (more for tempo moves). Adjust after timing a few real sessions.
-9. **Updates apply on the next launch.** There's no "update ready" prompt.
-10. **Export only, no import.** Restore comes in Phase 4.
-11. **Possible spec slip:** the spec's Phase 3 five-day schedule leaves out Wednesday. Confirm it before Phase 2.
+5. **Session times are estimates,** at about 3 s per rep (more for tempo moves). Adjust after timing a few real sessions.
+6. **Updates apply on the next launch.** There's no "update ready" prompt.
+7. **Export only, no import.** Restore comes in Phase 4.
+8. **Missed check-ins stay unrated.** A check-in skipped with Later and never done by midnight stays `null`. Starting "Train again" before checking in also leaves the earlier session unrated.
+9. **Ramp weeks use your current workout days.** Changing your days mid-phase changes how many workouts past weeks count as planned.
+10. **The "Which ones, and why?" list can be long** after ending early, because it lists every unfinished exercise, including arm care. You can skip any of them.
 
 ## Deploy steps (not done yet)
 

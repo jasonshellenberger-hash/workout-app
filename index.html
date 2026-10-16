@@ -116,8 +116,24 @@
     </div>
     <div class="c-actions">
       <button class="btn btn-secondary" id="c-stretch">Stretch</button>
-      <button class="btn btn-primary btn-xl" id="c-done">Done</button>
+      <button class="btn btn-primary btn-xl" id="c-done">Check in</button>
     </div>
+  </div>
+
+  <!-- Post-workout check-in: one question per screen, under 30 seconds -->
+  <div class="checkin" id="checkin" hidden>
+    <header class="ci-top">
+      <button class="ci-nav" id="ci-back">Back</button>
+      <div class="ci-dots" id="ci-dots"></div>
+      <button class="ci-nav" id="ci-later">Later</button>
+    </header>
+    <div class="ci-body" id="ci-body"></div>
+  </div>
+
+  <!-- Level up: old → new exercise. Silent, under 2 s. -->
+  <div class="levelup" id="levelup" hidden>
+    <div class="lu-inner" id="lu-inner"></div>
+    <button class="btn btn-primary btn-xl" id="lu-done">Nice</button>
   </div>
 
   <div class="flash" id="flash" aria-hidden="true"></div>
@@ -125,6 +141,7 @@
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <script src="db.js"></script>
+  <script src="adapt.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

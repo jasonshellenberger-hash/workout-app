@@ -2,7 +2,7 @@
 
 A personal iPhone workout app (PWA): quiet 15–22 minute home workouts, a guided player with timers, and a local log. Plain HTML, CSS, and JavaScript. No framework and no build step. All data stays on the phone.
 
-**Phase 1 (this version):** plan generator, workout player with timers, completion logging, equipment list, quiet mode, and data export. See `SPEC.md` (kept local, not in the repo) for later phases.
+**Phase 2 (this version):** everything in Phase 1 (plan generator, workout player with timers, completion logging, equipment list, quiet mode, data export) plus the post-workout check-in, per-exercise progression, and the 3 → 5 day ramp. See `SPEC.md` (kept local, not in the repo) for later phases.
 
 ## Files
 
@@ -102,4 +102,4 @@ Only `exercises.json` changed? Still bump `CACHE_VERSION`.
 
 ## Editing exercises
 
-Each ladder in `exercises.json` lists rungs from easiest to hardest. A rung's `equipment` lists every item it needs. `"db10|db20"` means either one works. Every rung must stay `"quiet": true`. Starting rungs and rep targets are in `START_PROGRESSION` in `app.js`. Phase 2 will move them automatically after each check-in.
+Each ladder in `exercises.json` lists rungs from easiest to hardest. A rung's `equipment` lists every item it needs. `"db10|db20"` means either one works. Every rung must stay `"quiet": true`. Starting rungs and rep targets are in `START_PROGRESSION` in `app.js`. The check-in moves them after each workout (rules in `adapt.js`).

@@ -372,6 +372,91 @@ svg { display: block; }
 .c-actions.single { grid-template-columns: 1fr; }
 
 /* ==========================================================================
+   Check-in
+   ========================================================================== */
+.checkin {
+  position: fixed; inset: 0; z-index: 62;
+  display: flex; flex-direction: column;
+  background: var(--bg);
+  padding: calc(var(--safe-top) + 8px) calc(var(--safe-right) + 20px) calc(var(--safe-bottom) + 16px) calc(var(--safe-left) + 20px);
+}
+.checkin.is-in { animation: fade-in 250ms ease; }
+.ci-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; }
+.ci-nav { min-width: 64px; min-height: 44px; color: var(--accent); font-weight: 600; }
+#ci-back { text-align: left; }
+#ci-later { text-align: right; color: var(--text-muted); }
+.ci-dots { display: flex; gap: 6px; }
+.ci-dots span { width: 8px; height: 8px; border-radius: 50%; background: var(--surface-raised); transition: background-color var(--dur) ease; }
+.ci-dots span.on { background: var(--accent); }
+
+.ci-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; padding: 4vh 0 4px; max-width: 560px; width: 100%; margin: 0 auto; }
+.ci-body.step-in { animation: step-in 260ms var(--ease-out); }
+.ci-q { margin: 0; font-size: 34px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.1; }
+.ci-sub { margin: 8px 0 0; color: var(--text-muted); }
+.ci-list { display: flex; flex-direction: column; gap: 10px; margin-top: 24px; }
+
+.ci-choice, .ci-rate {
+  display: flex; align-items: center; gap: 14px; flex: none;
+  min-height: 64px; padding: 0 20px; border-radius: 18px;
+  background: var(--surface); font-size: 20px; font-weight: 600; text-align: left;
+  transition: transform 120ms ease, background-color var(--dur) ease;
+}
+.ci-choice:active, .ci-rate:active { transform: scale(.98); background: var(--surface-raised); }
+.ci-choice.suggest { box-shadow: inset 0 0 0 2px var(--accent); }
+.ci-rate-num {
+  width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; flex: none;
+  font-size: 17px; font-weight: 700; background: var(--surface-raised); color: var(--text-muted);
+}
+.ci-rate.easy .ci-rate-num { background: color-mix(in srgb, var(--win) 18%, transparent); color: var(--win); }
+.ci-rate.right .ci-rate-num { background: var(--accent-soft); color: var(--accent); }
+.ci-rate.hard .ci-rate-num { background: color-mix(in srgb, var(--caution) 18%, transparent); color: var(--caution); }
+.ci-rate.brutal .ci-rate-num { background: color-mix(in srgb, var(--miss) 18%, transparent); color: var(--miss); }
+.ci-choice.knee-2 { color: var(--caution); }
+.ci-choice.knee-3 { color: var(--miss); }
+
+.ci-ex { background: var(--surface); border-radius: var(--radius); padding: 14px 16px; flex: none; }
+.ci-ex-name { font-weight: 600; }
+.ci-ex-sub { font-size: 14px; color: var(--text-muted); margin-top: 2px; }
+.ci-chips { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+.ci-chip { min-height: 44px; border-radius: 12px; background: var(--surface-raised); font-size: 15px; font-weight: 600; color: var(--text-muted); transition: background-color var(--dur) ease, color var(--dur) ease; }
+.ci-chip.on { background: var(--accent); color: var(--on-accent); }
+.ci-next { width: 100%; flex: none; margin-top: 20px; }
+
+/* Level up */
+.levelup {
+  position: fixed; inset: 0; z-index: 64;
+  display: flex; flex-direction: column;
+  background: var(--bg);
+  padding: calc(var(--safe-top) + 20px) calc(var(--safe-right) + 20px) calc(var(--safe-bottom) + 16px) calc(var(--safe-left) + 20px);
+}
+.lu-inner { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 6px; }
+.lu-badge { width: 88px; height: 88px; border-radius: 28px; display: grid; place-items: center; background: var(--accent-soft); margin-bottom: 14px; }
+.lu-badge svg { width: 48px; height: 48px; fill: none; stroke: var(--accent); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.lu-title { margin: 0 0 16px; font-size: 40px; font-weight: 700; letter-spacing: -0.02em; }
+.lu-pair { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-top: 10px; }
+.lu-old { font-size: 19px; color: var(--text-muted); text-decoration: line-through; text-decoration-color: rgba(155,161,172,.5); }
+.lu-arrow svg { width: 20px; height: 20px; fill: none; stroke: var(--text-muted); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.lu-new { font-size: 26px; font-weight: 700; color: var(--accent); }
+.levelup .lu-badge, .levelup .lu-title, .levelup .lu-pair, .levelup #lu-done { opacity: 0; }
+.levelup.play .lu-badge { animation: pop 420ms var(--ease-out) forwards; }
+.levelup.play .lu-title { animation: rise 300ms var(--ease-out) 250ms forwards; }
+.levelup.play .lu-pair { animation: rise 300ms var(--ease-out) 450ms forwards; }
+.levelup.play #lu-done { animation: rise 300ms var(--ease-out) 900ms forwards; }
+@keyframes pop { 0% { opacity: 0; transform: scale(.6); } 70% { opacity: 1; transform: scale(1.08); } 100% { opacity: 1; transform: none; } }
+
+/* Today: plan notes and the ramp card */
+.hero-note { margin-top: 12px; padding: 10px 12px; border-radius: 12px; background: var(--accent-soft); color: var(--accent); font-size: 15px; font-weight: 600; }
+.ramp-card { margin-bottom: 12px; box-shadow: inset 0 0 0 1.5px var(--accent); }
+.ramp-title { margin: 6px 0; font-size: 24px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.15; }
+.ramp-card p { margin: 0; }
+.ramp-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 16px; }
+.ramp-actions .btn { min-height: 50px; }
+
+/* History */
+.levelup-line { display: flex; align-items: center; gap: 4px; color: var(--accent); }
+.levelup-line svg { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ==========================================================================
    Action sheet + toast
    ========================================================================== */
 .sheet-root { position: fixed; inset: 0; z-index: 90; display: flex; flex-direction: column; justify-content: flex-end; }
@@ -399,7 +484,9 @@ svg { display: block; }
   white-space: nowrap; pointer-events: none;
 }
 .toast.show { transform: translate(-50%, -8px); opacity: 1; }
+.views.has-dock ~ .toast { bottom: calc(var(--safe-bottom) + var(--tabbar-h) + var(--dock-h) + 20px); }
 
 @media (prefers-reduced-motion: reduce) {
-  .view, .p-body.step-in, .player, .sheet { animation: none; }
+  .view, .p-body.step-in, .player, .sheet, .ci-body.step-in, .checkin.is-in { animation: none; }
+  .levelup .lu-badge, .levelup .lu-title, .levelup .lu-pair, .levelup #lu-done { opacity: 1; animation: none !important; }
 }

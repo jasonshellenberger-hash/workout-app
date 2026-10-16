@@ -1,7 +1,7 @@
 /* Offline support: cache the app shell on install, serve it cache-first.
  * After changing any app file, bump CACHE_VERSION so phones pick up the new files.
  */
-const CACHE_VERSION = 'v3';
+const CACHE_VERSION = 'v4';
 const CACHE = `workout-${CACHE_VERSION}`;
 
 // Navigations (including './') are answered from the cached index.html below.
@@ -9,6 +9,7 @@ const ASSETS = [
   'index.html',
   'styles.css',
   'db.js',
+  'adapt.js',
   'app.js',
   'exercises.json',
   'manifest.json',
