@@ -86,6 +86,16 @@ The rules live in `adapt.js` as pure functions. `app.js` handles the screens and
   - Queued one-time changes aren't used up. A practice plan shows them, but the next real workout still gets them.
   - No rotation advance, and no effect on the week count or ramp.
 - **Ending early:** ending a practice run early goes to the reasons step and the same preview.
+- **Where it's offered (v2.1.1, cache v6):**
+  - Every session that isn't today's planned workout asks **Real workout** or **Practice (won't count)** first: Train anyway, Train again, and Start on an Extra workout card. Resuming an unfinished session never asks.
+  - Choosing Real on Train anyway starts the session right away.
+  - **Me → Start a practice run** works on any day. It uses today's plan if there is one.
+- **Logs with no circuit sets don't count.** A workout ended before any circuit set (e.g. right after the warm-up) is still saved, so it shows in History. It doesn't:
+  - Advance the A/B or day-type rotation
+  - Ask for a check-in
+  - Count toward the week count or the ramp
+  
+  This also applies to logs already on the phone, because these rules are recalculated from the logs.
 
 ## Known issues / fix next
 

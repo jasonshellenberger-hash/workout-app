@@ -6,7 +6,7 @@
    The adaptation rules themselves live in adapt.js.
    ========================================================================== */
 
-const APP_VERSION = '2.1.0';
+const APP_VERSION = '2.1.1';
 
 const DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DAY_LETTER = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
@@ -154,6 +154,7 @@ function toast(msg) {
 function actionSheet({ title, actions }) {
   return new Promise(resolve => {
     const root = $('#sheet-root');
+    $('#toast').classList.remove('show'); // a leftover toast would sit on top of the sheet
     root.innerHTML = `
       <div class="sheet-backdrop" data-v="__cancel"></div>
       <div class="sheet">
@@ -237,9 +238,9 @@ function itemFor(ex, prog) {
    ========================================================================== */
 async function nextDayType(beforeDate) {
   const logs = await DB.getAll('logs');
-  // Any workout with sets done moves the rotation along, including one ended early.
+  // Any workout with circuit sets done moves the rotation along, including one ended early.
   const last = logs
-    .filter(l => (l.status === 'completed' || l.setsDone > 0) && l.date < beforeDate)
+    .filter(l => countsAsWorkout(l) && l.date < beforeDate)
     .sort((a, b) => (a.finishedAt || '').localeCompare(b.finishedAt || ''))
     .pop();
   if ((S.settings.phase || 1) === 1) return last?.dayType === 'fullA' ? 'fullB' : 'fullA';
@@ -520,11 +521,22 @@ async function rampWeeks() {
     const inWeek = logs.filter(l => keys.includes(l.date));
     weeks.push({
       planned: keys.filter(isPlannedDay).length,
-      done: new Set(inWeek.filter(l => l.status === 'completed').map(l => l.date)).size,
-      ratings: inWeek.map(l => l.checkIn?.rating).filter(Boolean),
+      done: new Set(inWeek.filter(l => l.status === 'completed' && countsAsWorkout(l)).map(l => l.date)).size,
+      ratings: inWeek.filter(countsAsWorkout).map(l => l.checkIn?.rating).filter(Boolean),
     });
   }
   return weeks;
+}
+
+// A log counts as a workout only if a circuit set was done. One ended after the warm-up never moves
+// the rotation, asks for a check-in, or counts toward the week or the ramp.
+// Logs without a per-exercise breakdown fall back to their status.
+function circuitSetsDone(log) {
+  return (log.exercises || []).filter(e => e.block === 'circuit').reduce((n, e) => n + (e.setsDone || 0), 0);
+}
+function countsAsWorkout(log) {
+  if (!log.exercises?.length) return log.status === 'completed';
+  return circuitSetsDone(log) > 0;
 }
 
 async function logsFor(dKey) {
@@ -534,7 +546,7 @@ async function logsFor(dKey) {
 async function weekSummary(ref = new Date()) {
   const start = weekStart(ref);
   const keys = Array.from({ length: 7 }, (_, i) => dateKey(addDays(start, i)));
-  const logs = (await DB.getAll('logs')).filter(l => l.status === 'completed' && keys.includes(l.date));
+  const logs = (await DB.getAll('logs')).filter(l => l.status === 'completed' && countsAsWorkout(l) && keys.includes(l.date));
   const doneDates = new Set(logs.map(l => l.date));
   return { keys, doneDates, planned: keys.filter(isPlannedDay).length, done: doneDates.size };
 }
@@ -773,7 +785,7 @@ function nextWorkoutDay(from) {
 // Today's newest log that still wants a check-in. Phase 1 logs (no schema) never ask.
 function pendingCheckIn(todaysLogs) {
   return todaysLogs
-    .filter(l => l.schema >= 2 && !l.checkIn && (l.status === 'completed' || l.setsDone > 0))
+    .filter(l => l.schema >= 2 && !l.checkIn && countsAsWorkout(l))
     .sort((a, b) => (a.finishedAt || '').localeCompare(b.finishedAt || ''))
     .pop() || null;
 }
@@ -933,8 +945,9 @@ async function renderMe() {
           <div class="row-sub">${phase < 3 ? `${ramp.earned} of 2 strong weeks toward ${PHASE_DAYS[phase + 1].length} days` : 'Top phase'}</div>
         </div>
       </div>
+      <button class="row btn-row" data-action="practice">${ICONS.play}<span>Start a practice run</span></button>
     </div>
-    <div class="section-foot">A strong week: 80%+ of workouts done and an average rating of Just right or easier.</div>
+    <div class="section-foot">A strong week: 80%+ of workouts done and an average rating of Just right or easier. Practice runs never count or save anything.</div>
 
     <div class="section-label">Current levels</div>
     <div class="group">${levels}</div>
@@ -1080,9 +1093,10 @@ async function startStretch(logId) {
   openPlayer();
 }
 
-// Practice (won't count): a fresh plan for today, run in memory. No log, session, plan, or progress is saved.
+// Practice (won't count): today's plan if there is one, otherwise one built in memory.
+// No log, session, plan, or progress is saved.
 async function startPractice() {
-  const workout = await generateWorkout(dateKey(), { scheduled: false, persist: false });
+  const workout = (await DB.get('workouts', dateKey())) || await generateWorkout(dateKey(), { scheduled: false, persist: false });
   P.mode = 'workout';
   P.practice = true;
   P.workout = workout;
@@ -1311,14 +1325,15 @@ async function onClose() {
     const log = anyDone ? practiceLog('partial') : null;
     closePlayer();
     await showTab('today');
-    if (log) openCheckIn(log, { partial: true });
+    if (log && countsAsWorkout(log)) openCheckIn(log, { partial: true });
+    else toast('Practice: nothing saved');
     return;
   }
   const log = anyDone ? await saveLog('partial') : null;
   await DB.delete('settings', 'session');
   closePlayer();
   await showTab('today');
-  if (log) openCheckIn(log, { partial: true });
+  if (log && countsAsWorkout(log)) openCheckIn(log, { partial: true });
 }
 
 function saveSession() {
@@ -1683,6 +1698,16 @@ async function finalizeStaleSession() {
   await DB.delete('settings', 'session');
 }
 
+// Real or Practice, for any session that isn't today's planned workout.
+async function chooseSession(title) {
+  const choice = await actionSheet({
+    title,
+    actions: [{ label: 'Real workout', value: 'real' }, { label: "Practice (won't count)", value: 'practice' }],
+  });
+  if (choice) Sound.unlock(); // still inside the sheet tap, before any await
+  return choice;
+}
+
 function bindEvents() {
   $('#tabbar').addEventListener('click', e => {
     const tab = e.target.closest('.tab');
@@ -1694,20 +1719,27 @@ function bindEvents() {
     const act = e.target.closest('[data-action]')?.dataset.action;
     if (!act) return;
     if (act === 'start') {
+      const today = dateKey();
       const session = await DB.get('settings', 'session');
-      startWorkout({ resume: !!session && session.workoutId === dateKey() });
-    } else if (act === 'train-anyway') {
-      const choice = await actionSheet({
-        title: 'Train on a rest day',
-        actions: [{ label: 'Real workout', value: 'real' }, { label: "Practice (won't count)", value: 'practice' }],
-      });
-      if (choice === 'practice') {
-        Sound.unlock(); // still inside the tap, before any await
-        return startPractice();
+      const resume = !!session && session.workoutId === today;
+      const doneToday = (await logsFor(today)).some(l => l.status === 'completed');
+      const planned = (await DB.get('workouts', today))?.scheduled !== false;
+      // Today's planned workout (or resuming one) starts straight away. Anything extra asks first.
+      if (!resume && (doneToday || !planned)) {
+        const choice = await chooseSession(doneToday ? 'Train again' : 'Extra workout');
+        if (choice === 'practice') return startPractice();
+        if (choice !== 'real') return;
       }
+      startWorkout({ resume });
+    } else if (act === 'train-anyway') {
+      const choice = await chooseSession('Train on a rest day');
+      if (choice === 'practice') return startPractice();
       if (choice !== 'real') return;
       await generateWorkout(dateKey(), { scheduled: false });
-      renderToday();
+      startWorkout();
+    } else if (act === 'practice') {
+      Sound.unlock(); // inside the tap
+      startPractice();
     } else if (act === 'stretch') {
       const log = (await logsFor(dateKey())).filter(l => l.status === 'completed').pop();
       startStretch(log?.id);
