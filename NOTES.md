@@ -97,6 +97,13 @@ The rules live in `adapt.js` as pure functions. `app.js` handles the screens and
   
   This also applies to logs already on the phone, because these rules are recalculated from the logs.
 
+## Update banner (v2.2.0, cache v7)
+
+- **Waiting:** a new service worker installs in the background and waits instead of taking over on its own.
+- **Banner:** when one is waiting, Today shows **Update ready, tap to reload** at the top. Tapping it tells the new version to take over, and the page reloads onto it.
+- **Checking:** the app checks for a new version on launch and whenever it comes back to the foreground.
+- **First install:** the very first install just caches, with no banner and no reload.
+
 ## Known issues / fix next
 
 1. **Phase 2 not yet tested on the iPhone.**
@@ -104,7 +111,7 @@ The rules live in `adapt.js` as pure functions. `app.js` handles the screens and
 3. **Ending early, then restarting.** After you end a workout early, Today offers "Start workout" again, and finishing that creates a second log for the same day. History will show both. A fix would merge them, or resume from the partial log.
 4. **Workouts left open past midnight.** A workout left unfinished overnight is saved as partial with a duration of 0.
 5. **Session times are estimates,** at about 3 s per rep (more for tempo moves). Adjust after timing a few real sessions.
-6. **Updates apply on the next launch.** There's no "update ready" prompt.
+6. **The first update after v2.1.1 has no banner yet.** The v2.1.1 app on the phone doesn't have the banner code, so the v2.2.0 update installs and waits. Swipe the app closed and reopen it once to switch over. Every update after that shows the banner.
 7. **Export only, no import.** Restore comes in Phase 4.
 8. **Missed check-ins stay unrated.** A check-in skipped with Later and never done by midnight stays `null`. Starting "Train again" before checking in also leaves the earlier session unrated.
 9. **Ramp weeks use your current workout days.** Changing your days mid-phase changes how many workouts past weeks count as planned.
@@ -137,4 +144,4 @@ The rules live in `adapt.js` as pure functions. `app.js` handles the screens and
 **To redeploy later:**
 1. Bump `CACHE_VERSION` in `service-worker.js`.
 2. Commit and push.
-3. On the phone, open the app, swipe it closed, and reopen it.
+3. On the phone, open the app while online. Within a few seconds Today shows **Update ready, tap to reload**. Tap it. Swiping the app closed and reopening it also works.

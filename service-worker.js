@@ -1,7 +1,9 @@
 /* Offline support: cache the app shell on install, serve it cache-first.
  * After changing any app file, bump CACHE_VERSION so phones pick up the new files.
+ * A new version installs in the background and waits. Today shows "Update ready, tap to reload",
+ * and the tap sends SKIP_WAITING. Closing the app fully also lets it take over on the next launch.
  */
-const CACHE_VERSION = 'v6';
+const CACHE_VERSION = 'v7';
 const CACHE = `workout-${CACHE_VERSION}`;
 
 // Navigations (including './') are answered from the cached index.html below.
@@ -23,8 +25,11 @@ self.addEventListener('install', event => {
   event.waitUntil(
     caches.open(CACHE)
       .then(cache => cache.addAll(ASSETS.map(a => new Request(a, { cache: 'reload' }))))
-      .then(() => self.skipWaiting())
   );
+});
+
+self.addEventListener('message', event => {
+  if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
 });
 
 self.addEventListener('activate', event => {

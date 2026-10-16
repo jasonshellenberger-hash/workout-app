@@ -6,7 +6,7 @@
    The adaptation rules themselves live in adapt.js.
    ========================================================================== */
 
-const APP_VERSION = '2.1.1';
+const APP_VERSION = '2.2.0';
 
 const DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DAY_LETTER = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
@@ -99,6 +99,7 @@ const ICONS = {
   volume: '<svg viewBox="0 0 24 24"><path d="M11 4.7a.7.7 0 0 0-1.2-.5L6.4 7.6A1.4 1.4 0 0 1 5.4 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.4a1.4 1.4 0 0 1 1 .4l3.4 3.4a.7.7 0 0 0 1.2-.5z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.4 18.4a9 9 0 0 0 0-12.7"/></svg>',
   history: '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>',
   levelUp: '<svg viewBox="0 0 24 24"><path d="m17 11-5-5-5 5"/><path d="m17 18-5-5-5 5"/></svg>',
+  refresh: '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>',
   arrowDown: '<svg viewBox="0 0 24 24"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg>',
   utensils: '<svg viewBox="0 0 24 24"><path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/></svg>',
 };
@@ -770,7 +771,10 @@ async function renderToday() {
       </div>
     </div>`;
 
-  $('#view-today').innerHTML = largeTitle('Today', fmtLongDate(now)) + await rampCard() + hero + `<div style="height:12px"></div>` + weekHtml;
+  const updateBanner = Update.waiting
+    ? `<button class="update-banner" data-action="update">${ICONS.refresh}<span>Update ready, tap to reload</span></button>`
+    : '';
+  $('#view-today').innerHTML = updateBanner + largeTitle('Today', fmtLongDate(now)) + await rampCard() + hero + `<div style="height:12px"></div>` + weekHtml;
   setDock(dock);
 }
 
@@ -1681,6 +1685,43 @@ function showLevelUp(ups) {
 }
 
 /* ==========================================================================
+   Updates: a new service worker waits until you tap the banner on Today
+   ========================================================================== */
+const Update = {
+  waiting: null,
+  applying: false,
+  found(worker) {
+    this.waiting = worker;
+    if (S.tab === 'today') renderToday();
+  },
+  async register() {
+    const reg = await navigator.serviceWorker.register('service-worker.js');
+    // Only an update gets the banner. The very first install (no controller yet) just caches.
+    const watch = w => w?.addEventListener('statechange', () => {
+      if (w.state === 'installed' && navigator.serviceWorker.controller) this.found(w);
+    });
+    if (reg.waiting && navigator.serviceWorker.controller) this.found(reg.waiting);
+    watch(reg.installing);
+    reg.addEventListener('updatefound', () => watch(reg.installing));
+    // Reload only when the banner asked for it, not when the first install claims the page.
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!this.applying) return;
+      this.applying = false;
+      location.reload();
+    });
+    // A home-screen app can stay open for days, so look for a new version whenever it comes back.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') reg.update().catch(() => {});
+    });
+  },
+  apply() {
+    if (!this.waiting || this.waiting.state === 'redundant') return location.reload();
+    this.applying = true;
+    this.waiting.postMessage({ type: 'SKIP_WAITING' });
+  },
+};
+
+/* ==========================================================================
    Boot
    ========================================================================== */
 async function finalizeStaleSession() {
@@ -1758,6 +1799,8 @@ function bindEvents() {
       S.adapt.rampDismissed = dateKey(weekStart());
       await saveAdapt();
       renderToday();
+    } else if (act === 'update') {
+      Update.apply();
     } else if (act === 'export') {
       exportData();
     } else if (act === 'test-cue') {
@@ -1820,7 +1863,7 @@ async function boot() {
   await showTab('today');
 
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-    navigator.serviceWorker.register('service-worker.js').catch(err => console.warn('SW registration failed', err));
+    Update.register().catch(err => console.warn('SW registration failed', err));
   }
 }
 
