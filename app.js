@@ -6,7 +6,7 @@
    The adaptation rules themselves live in adapt.js.
    ========================================================================== */
 
-const APP_VERSION = '2.0.0';
+const APP_VERSION = '2.1.0';
 
 const DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DAY_LETTER = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
@@ -252,7 +252,8 @@ function lighten(item) {
   else item.reps = Math.max(5, item.reps - 2);
 }
 
-async function generateWorkout(dKey, { scheduled = true } = {}) {
+// persist: false (Practice) builds the plan in memory: nothing stored, no one-time changes used up.
+async function generateWorkout(dKey, { scheduled = true, persist = true } = {}) {
   const date = parseKey(dKey);
   const dow = date.getDay();
   const dayType = await nextDayType(dKey);
@@ -356,14 +357,15 @@ async function generateWorkout(dKey, { scheduled = true } = {}) {
     notes,
     createdAt: new Date().toISOString(),
   };
+  workout.estSec = estimateSec(workout, false);
+  workout.estStretchSec = estimateSec({ blocks: workout.blocks.filter(b => b.kind === 'stretch') }, true, true);
+  if (!persist) return workout;
   // Used up: these applied to this workout. invalidateTodayPlan puts them back if the plan is rebuilt.
   S.adapt.shortNext = false;
   S.adapt.lightNext = false;
   if (mods.lightLegs) S.adapt.lightLegsNext = false;
   S.adapt.kneeSwap = (S.adapt.kneeSwap || []).filter(l => !mods.kneeSwap.includes(l));
   await saveAdapt();
-  workout.estSec = estimateSec(workout, false);
-  workout.estStretchSec = estimateSec({ blocks: workout.blocks.filter(b => b.kind === 'stretch') }, true, true);
   await DB.put('workouts', workout);
   return workout;
 }
@@ -1038,6 +1040,7 @@ const P = {
   lastWhole: null,
   timer: null,
   logId: null,          // stretch mode: the log to update
+  practice: false,      // Practice: the full flow, but nothing is saved
   includeStretch: false,
 };
 
@@ -1050,6 +1053,7 @@ async function startWorkout({ resume = false } = {}) {
   Sound.unlock(); // inside the Start tap
   const session = resume ? await DB.get('settings', 'session') : null;
   P.mode = 'workout';
+  P.practice = false;
   P.workout = workout;
   P.includeStretch = session ? !!session.includeStretch : !!S.settings.includeStretch;
   P.steps = buildSteps(workout, P.includeStretch);
@@ -1065,6 +1069,7 @@ async function startStretch(logId) {
   if (!workout) return;
   Sound.unlock();
   P.mode = 'stretch';
+  P.practice = false;
   P.workout = workout;
   P.includeStretch = true;
   P.steps = buildSteps(workout, true, true);
@@ -1075,8 +1080,31 @@ async function startStretch(logId) {
   openPlayer();
 }
 
+// Practice (won't count): a fresh plan for today, run in memory. No log, session, plan, or progress is saved.
+async function startPractice() {
+  const workout = await generateWorkout(dateKey(), { scheduled: false, persist: false });
+  P.mode = 'workout';
+  P.practice = true;
+  P.workout = workout;
+  P.includeStretch = !!S.settings.includeStretch;
+  P.steps = buildSteps(workout, P.includeStretch);
+  P.i = 0;
+  P.results = {};
+  P.startedAt = new Date().toISOString();
+  P.logId = null;
+  openPlayer();
+}
+
+// A log built in memory for Practice. It never reaches storage.
+function practiceLog(status) {
+  const log = buildLog(status);
+  log.practice = true;
+  return log;
+}
+
 function openPlayer() {
   P.active = true;
+  $('#p-practice').hidden = !P.practice;
   P.pausedRemaining = null;
   const el = $('#player');
   el.classList.remove('is-leaving');
@@ -1265,8 +1293,10 @@ async function onClose() {
   if (!wasPaused) togglePause();
   const anyDone = Object.values(P.results).includes('done');
   const choice = await actionSheet({
-    title: P.mode === 'stretch' ? 'End the stretch?' : (anyDone ? 'End the workout? What you did so far is saved.' : 'End the workout?'),
-    actions: [{ label: P.mode === 'stretch' ? 'End stretch' : 'End workout', value: 'end', destructive: true }],
+    title: P.mode === 'stretch' ? 'End the stretch?'
+      : P.practice ? 'End practice? Nothing is saved.'
+      : (anyDone ? 'End the workout? What you did so far is saved.' : 'End the workout?'),
+    actions: [{ label: P.mode === 'stretch' ? 'End stretch' : P.practice ? 'End practice' : 'End workout', value: 'end', destructive: true }],
   });
   if (choice !== 'end') { if (!wasPaused) togglePause(); return; }
   $('#p-paused').hidden = true;
@@ -1277,6 +1307,13 @@ async function onClose() {
     closePlayer();
     return showTab(S.tab);
   }
+  if (P.practice) {
+    const log = anyDone ? practiceLog('partial') : null;
+    closePlayer();
+    await showTab('today');
+    if (log) openCheckIn(log, { partial: true });
+    return;
+  }
   const log = anyDone ? await saveLog('partial') : null;
   await DB.delete('settings', 'session');
   closePlayer();
@@ -1285,7 +1322,7 @@ async function onClose() {
 }
 
 function saveSession() {
-  if (P.mode !== 'workout') return;
+  if (P.mode !== 'workout' || P.practice) return;
   DB.put('settings', {
     key: 'session',
     workoutId: P.workout.id,
@@ -1305,6 +1342,10 @@ async function finishPlayer() {
   }
   cue('done');
   const before = await weekSummary();
+  if (P.practice) {
+    closePlayer();
+    return showCompletion(practiceLog('completed'), before.done, before.done, before.planned);
+  }
   const alreadyCounted = before.doneDates.has(P.workout.date);
   const log = await saveLog('completed');
   await DB.delete('settings', 'session');
@@ -1381,14 +1422,15 @@ async function markStretchDone(logId) {
 function showCompletion(log, fromCount, toCount, planned) {
   S.lastLog = log;
   const el = $('#complete');
-  $('#c-title').textContent = 'Workout done';
-  $('#c-sub').textContent = `${log.name} · ${fmtMinutes(log.durationSec)}`;
+  $('#c-title').textContent = log.practice ? 'Practice done' : 'Workout done';
+  $('#c-sub').textContent = `${log.name} · ${fmtMinutes(log.durationSec)}${log.practice ? ' · not saved' : ''}`;
+  $('#c-practice').hidden = !log.practice;
   const count = $('#c-count');
   count.textContent = fromCount;
   count.classList.remove('tick');
   $('#c-of').textContent = ` of ${planned}`;
   const stretchBtn = $('#c-stretch');
-  const canStretch = !log.stretchDone && P.workout.blocks.some(b => b.kind === 'stretch');
+  const canStretch = !log.practice && !log.stretchDone && P.workout.blocks.some(b => b.kind === 'stretch');
   stretchBtn.hidden = !canStretch;
   stretchBtn.dataset.logId = log.id;
   el.querySelector('.c-actions').classList.toggle('single', !canStretch);
@@ -1415,7 +1457,7 @@ function hideCompletion() {
 /* ==========================================================================
    Check-in: one question per screen, under 30 seconds
    ========================================================================== */
-const CI = { log: null, step: null, trail: [], partial: false, finishedAll: null, rating: null, reasons: {}, knees: null };
+const CI = { log: null, step: null, trail: [], partial: false, finishedAll: null, rating: null, reasons: {}, knees: null, preview: null };
 
 function ciPath() {
   const path = CI.partial ? [] : ['finished'];
@@ -1426,6 +1468,7 @@ function ciPath() {
     path.push('rating');
   }
   path.push('knees');
+  if (CI.log.practice) path.push('preview');
   return path;
 }
 
@@ -1462,7 +1505,9 @@ function renderCheckIn() {
   const path = ciPath();
   const at = path.indexOf(CI.step);
   $('#ci-dots').innerHTML = path.map((_, i) => `<span class="${i <= at ? 'on' : ''}"></span>`).join('');
-  $('#ci-back').style.visibility = CI.trail.length ? 'visible' : 'hidden';
+  $('#ci-back').style.visibility = CI.trail.length && CI.step !== 'preview' ? 'visible' : 'hidden';
+  $('#ci-later').style.visibility = CI.step === 'preview' ? 'hidden' : 'visible';
+  $('#ci-practice').hidden = !CI.log.practice;
 
   const q = (title, sub = '') => `<h1 class="ci-q">${esc(title)}</h1>${sub ? `<p class="ci-sub">${esc(sub)}</p>` : ''}`;
   let html = '';
@@ -1490,6 +1535,12 @@ function renderCheckIn() {
   } else if (CI.step === 'rest') {
     const n = ciFinishedCount();
     html = q('How was the rest?', `The ${n} exercise${n === 1 ? '' : 's'} you finished`) + ratingButtons();
+  } else if (CI.step === 'preview') {
+    const lines = CI.preview.map(changeText).filter(Boolean);
+    html = q('What would change', 'Practice only. Nothing was saved.') + `<div class="ci-list">${
+      lines.length ? lines.map(l => `<div class="ci-preview">${esc(l)}</div>`).join('')
+        : '<div class="ci-preview muted">No changes. Everything would stay where it is.</div>'}</div>
+      <button class="btn btn-primary btn-xl ci-next" data-ci-done>Done</button>`;
   } else if (CI.step === 'knees') {
     html = q('Knees today?') + `<div class="ci-list">${Adapt.KNEES.map((k, i) => `
       <button class="ci-choice knee-${i}" data-ci-knees="${i}">${k}</button>`).join('')}</div>`;
@@ -1504,10 +1555,10 @@ function onCheckInClick(e) {
   const t = e.target.closest('button');
   if (!t) return;
   if (t.id === 'ci-back') { if (CI.trail.length) { CI.step = CI.trail.pop(); renderCheckIn(); } return; }
-  if (t.id === 'ci-later') {
+  if (t.id === 'ci-later' || t.hasAttribute('data-ci-done')) {
     closeCheckIn();
     showTab('today');
-    return toast('You can check in from Today');
+    return toast(CI.log.practice ? 'Practice: nothing saved' : 'You can check in from Today');
   }
   if (t.dataset.ciFinished) {
     CI.finishedAll = t.dataset.ciFinished === 'yes';
@@ -1530,8 +1581,8 @@ function onCheckInClick(e) {
 }
 
 async function saveCheckIn() {
-  // Re-read: the stretch may have updated this log since the check-in opened.
-  const log = (await DB.get('logs', CI.log.id)) || CI.log;
+  // Re-read: the stretch may have updated this log since the check-in opened. Practice logs have no id.
+  const log = CI.log.practice ? CI.log : ((await DB.get('logs', CI.log.id)) || CI.log);
   const finishedAll = CI.finishedAll !== false;
   const checkIn = {
     v: 1,
@@ -1551,6 +1602,11 @@ async function saveCheckIn() {
     ladders: S.ladders, exById: S.exById, usable,
     dayTypeLadders: DAY_TYPES[log.dayType]?.circuit || [],
   });
+  if (log.practice) {
+    // Show what this check-in would change, on copies, and stop before anything is stored.
+    CI.preview = res.applied;
+    return ciGo('preview', false);
+  }
   checkIn.applied = res.applied;
   log.checkIn = checkIn;
   await DB.put('logs', log);
@@ -1570,6 +1626,25 @@ async function saveCheckIn() {
   const ups = res.applied.filter(c => c.change === 'rungUp');
   if (ups.length) showLevelUp(ups);
   else toast(res.applied.length ? 'Saved. Next workout adjusted.' : 'Saved');
+}
+
+// One line per change, for the Practice preview: "Next time: Push-up 13".
+function changeText(c) {
+  const name = exName(c.exerciseId || c.from);
+  switch (c.change) {
+    case 'target':
+      if (c.field === 'points') return `Next time: ${name}, ${c.to} of 3 points toward the next level`;
+      return `Next time: ${name} ${c.field === 'secondsTarget' ? `${c.to}s` : c.to}`;
+    case 'rungUp': return `Level up: ${exName(c.from)} → ${exName(c.to)}`;
+    case 'rungDown': return `Easier: ${exName(c.from)} → ${exName(c.to)}`;
+    case 'hide': return `${name} hidden until ${fmtShortDate(parseKey(c.to))}`;
+    case 'swapKnee': return `Knee support in place of ${name} next time`;
+    case 'short': return 'Next workout: one less exercise, no finisher';
+    case 'light': return 'Next workout: lighter, 2 fewer reps and no finisher';
+    case 'lightLegs': return 'Next workout with leg moves: 2 fewer reps on those';
+    case 'rest': return `${fmtShortDate(parseKey(c.to))} becomes a rest day`;
+    default: return '';
+  }
 }
 
 /* ---------- Level up: old → new exercise. Silent, under 2 s. ---------- */
@@ -1622,6 +1697,15 @@ function bindEvents() {
       const session = await DB.get('settings', 'session');
       startWorkout({ resume: !!session && session.workoutId === dateKey() });
     } else if (act === 'train-anyway') {
+      const choice = await actionSheet({
+        title: 'Train on a rest day',
+        actions: [{ label: 'Real workout', value: 'real' }, { label: "Practice (won't count)", value: 'practice' }],
+      });
+      if (choice === 'practice') {
+        Sound.unlock(); // still inside the tap, before any await
+        return startPractice();
+      }
+      if (choice !== 'real') return;
       await generateWorkout(dateKey(), { scheduled: false });
       renderToday();
     } else if (act === 'stretch') {

@@ -75,6 +75,18 @@ The rules live in `adapt.js` as pure functions. `app.js` handles the screens and
   - Me shows the training phase, progress toward the next one, and each ladder's current exercise and target.
 - **Schedule correction:** the spec's 5-day schedule (Sun, Mon, Wed, Thu, Fri) leaves out **Tuesday**, not Wednesday as an earlier note said. That's fine, because back-to-back days always get different day types.
 
+## Practice mode (v2.1.0, cache v5)
+
+- **Choosing it:** on a rest day, **Train anyway** asks **Real workout** or **Practice (won't count)**.
+- **What it runs:** the full flow, including the timers, completion screen, and check-in. A **PRACTICE** badge shows in the player, on the completion screen, and in the check-in.
+- **The ending:** instead of saving, the check-in ends on **What would change**, e.g. "Next time: Push-up 13" or "Level up: A → B".
+- **Nothing is saved:**
+  - No log, plan, or session record.
+  - No progression change.
+  - Queued one-time changes aren't used up. A practice plan shows them, but the next real workout still gets them.
+  - No rotation advance, and no effect on the week count or ramp.
+- **Ending early:** ending a practice run early goes to the reasons step and the same preview.
+
 ## Known issues / fix next
 
 1. **Phase 2 not yet tested on the iPhone.**

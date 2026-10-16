@@ -53,6 +53,7 @@
         <svg viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
       </button>
       <div class="p-meta">
+        <span class="practice-badge" id="p-practice" hidden>Practice</span>
         <div class="p-block" id="p-block"></div>
         <div class="p-progress"><div class="p-progress-fill" id="p-progress-fill"></div></div>
       </div>
@@ -107,6 +108,7 @@
         <circle class="c-ring-fill" cx="100" cy="100" r="88"/>
         <path class="c-check" d="M64 102 L90 128 L138 78"/>
       </svg>
+      <span class="practice-badge" id="c-practice" hidden>Practice</span>
       <h1 class="c-title" id="c-title">Workout done</h1>
       <p class="c-sub" id="c-sub"></p>
       <div class="c-stat">
@@ -124,7 +126,10 @@
   <div class="checkin" id="checkin" hidden>
     <header class="ci-top">
       <button class="ci-nav" id="ci-back">Back</button>
-      <div class="ci-dots" id="ci-dots"></div>
+      <div class="ci-mid">
+        <span class="practice-badge" id="ci-practice" hidden>Practice</span>
+        <div class="ci-dots" id="ci-dots"></div>
+      </div>
       <button class="ci-nav" id="ci-later">Later</button>
     </header>
     <div class="ci-body" id="ci-body"></div>
