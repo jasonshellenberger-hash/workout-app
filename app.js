@@ -5,7 +5,7 @@
    Plan generator · workout player · completion logging · settings
    ========================================================================== */
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.0.1';
 
 const DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DAY_LETTER = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
@@ -29,6 +29,7 @@ const DEFAULT_SETTINGS = {
   accent: 'orange',
   sound: true,
   flash: true,
+  flashStrength: 'bold',      // 'bold' | 'subtle'
   includeStretch: false,
   restBetweenRoundsSec: 60,
   transitionSec: 15,
@@ -413,20 +414,39 @@ function applyAccent() {
 
 const Sound = {
   ctx: null,
-  // Must run inside a tap handler (Start). "playback" lets the tone play with the ringer on silent.
-  unlock() {
+  last: null,  // { at, state } of the last tone attempt, shown on Me for debugging
+  // "playback" lets the tone play with the ringer on silent. Set it every time; iOS can drop it.
+  setSession() {
     try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) { /* not supported */ }
+  },
+  // Must run inside a tap handler. iOS only starts or restarts audio from a user gesture.
+  unlock() {
+    this.setSession();
     try {
       const AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) return;
+      // A context interrupted by another app (YouTube) can stay stuck on iOS. Replace it.
+      if (this.ctx && (this.ctx.state === 'closed' || this.ctx.state === 'interrupted')) {
+        try { this.ctx.close(); } catch (e) { /* ignore */ }
+        this.ctx = null;
+      }
       if (!this.ctx) this.ctx = new AC();
-      if (this.ctx.state !== 'running') this.ctx.resume();
+      if (this.ctx.state !== 'running') this.ctx.resume().catch(() => {});
       const src = this.ctx.createBufferSource();
       src.buffer = this.ctx.createBuffer(1, 1, 22050);
       src.connect(this.ctx.destination);
       src.start(0);
     } catch (e) { /* the flash still works */ }
   },
+  // Outside a gesture: try to wake a suspended context (after returning to the app).
+  resume() {
+    this.setSession();
+    if (this.ctx && this.ctx.state !== 'running' && this.ctx.state !== 'closed') {
+      return this.ctx.resume().catch(() => {});
+    }
+    return Promise.resolve();
+  },
+  state() { return this.ctx ? this.ctx.state : 'not created'; },
   tone(freq, at, dur, vol) {
     const ctx = this.ctx;
     const osc = ctx.createOscillator();
@@ -442,22 +462,27 @@ const Sound = {
   },
   play(kind) {
     if (!S.settings.sound || !this.ctx) return;
-    try {
-      if (this.ctx.state !== 'running') this.ctx.resume();
-      const t = this.ctx.currentTime + 0.01;
-      if (kind === 'go') { this.tone(660, t, 0.28, 0.2); this.tone(880, t + 0.16, 0.4, 0.2); }
-      else if (kind === 'done') { this.tone(880, t, 0.28, 0.18); this.tone(660, t + 0.16, 0.45, 0.18); }
-      else if (kind === 'tick') { this.tone(520, t, 0.12, 0.08); }
-    } catch (e) { /* ignore */ }
+    const go = () => {
+      this.last = { at: new Date(), state: this.state() };
+      try {
+        const t = this.ctx.currentTime + 0.01;
+        if (kind === 'go') { this.tone(660, t, 0.28, 0.2); this.tone(880, t + 0.16, 0.4, 0.2); }
+        else if (kind === 'done') { this.tone(880, t, 0.28, 0.18); this.tone(660, t + 0.16, 0.45, 0.18); }
+        else if (kind === 'tick') { this.tone(520, t, 0.12, 0.08); }
+      } catch (e) { /* ignore */ }
+    };
+    // Schedule after resume settles; currentTime is frozen while suspended.
+    if (this.ctx.state === 'running') go();
+    else this.resume().then(go);
   },
 };
 
 function flash() {
   if (!S.settings.flash) return;
   const el = $('#flash');
-  el.classList.remove('on');
+  el.classList.remove('on', 'bold', 'subtle');
   void el.offsetWidth; // restart the animation
-  el.classList.add('on');
+  el.classList.add('on', S.settings.flashStrength === 'subtle' ? 'subtle' : 'bold');
 }
 
 function cue(kind) { Sound.play(kind); flash(); }
@@ -680,9 +705,14 @@ function renderMe() {
       </div>
       ${switchRow('Sound cue', 'sound', { sub: 'Soft tone, plays even on silent' })}
       ${switchRow('Screen flash', 'flash', { sub: 'Flashes when a timer ends' })}
+      ${st.flash ? `<div class="row">
+        <div class="row-main"><div class="row-title">Flash strength</div></div>
+        <div class="seg">${['subtle', 'bold'].map(v => `<button class="seg-btn ${st.flashStrength === v ? 'on' : ''}" data-flash-strength="${v}">${v === 'bold' ? 'Bold' : 'Subtle'}</button>`).join('')}</div>
+      </div>` : ''}
       ${switchRow('Include stretch', 'includeStretch', { sub: 'Adds the 5-minute stretch to every workout' })}
       <button class="row btn-row" data-action="test-cue">${ICONS.volume}<span>Test sound and flash</span></button>
     </div>
+    <div class="section-foot" id="audio-debug">${esc(audioDebugText())}</div>
 
     <div class="section-label">Accent color</div>
     <div class="group">
@@ -698,6 +728,17 @@ function renderMe() {
     <div class="section-foot">Saves everything as one JSON file. Storage: ${esc(DB.backend)} · v${APP_VERSION}</div>
   `;
   $('#view-me').innerHTML = html;
+}
+
+// Debug line under Test sound and flash, so the phone can report what iOS is doing.
+function audioDebugText() {
+  const session = navigator.audioSession
+    ? `supported (${navigator.audioSession.type})`
+    : 'not supported';
+  const last = Sound.last
+    ? ` · Last tone ${Sound.last.at.toLocaleTimeString()} (${Sound.last.state})`
+    : '';
+  return `AudioContext: ${Sound.state()} · audioSession: ${session}${last}`;
 }
 
 async function onMeClick(e) {
@@ -717,6 +758,12 @@ async function onMeClick(e) {
     await saveSettings({ finisherDays: [...set].sort() });
     return renderMe();
   }
+  const fs = e.target.closest('[data-flash-strength]');
+  if (fs) {
+    await saveSettings({ flashStrength: fs.dataset.flashStrength });
+    renderMe();
+    return flash();
+  }
   const sw = e.target.closest('[data-accent]');
   if (sw && sw.classList.contains('swatch')) {
     await saveSettings({ accent: sw.dataset.accent });
@@ -728,6 +775,7 @@ async function onMeChange(e) {
   const input = e.target;
   if (input.dataset.setting) {
     await saveSettings({ [input.dataset.setting]: input.checked });
+    if (input.dataset.setting === 'flash') renderMe(); // show or hide Flash strength
   } else if (input.dataset.equip) {
     const set = new Set(S.settings.equipment);
     input.checked ? set.add(input.dataset.equip) : set.delete(input.dataset.equip);
@@ -971,22 +1019,29 @@ function onSkip() {
   advance(false);
 }
 
-function togglePause() {
-  const paused = $('#p-paused');
-  if (P.pausedRemaining == null) {
-    if (!P.stepEndsAt) { paused.hidden = false; P.pausedRemaining = 0; P._pausedUntimed = true; return; }
-    P.pausedRemaining = remainingSec();
-    paused.hidden = false;
-  } else {
-    if (!P._pausedUntimed) P.stepEndsAt = Date.now() + P.pausedRemaining * 1000;
-    P._pausedUntimed = false;
-    P.pausedRemaining = null;
-    P.lastWhole = null;
-    paused.hidden = true;
-    Sound.unlock();
-    Wake.on();
-  }
+function isPaused() { return P.pausedRemaining != null; }
+
+function pausePlayer() {
+  if (!P.active || isPaused()) return;
+  if (P.stepEndsAt) P.pausedRemaining = remainingSec();
+  else { P.pausedRemaining = 0; P._pausedUntimed = true; }
+  $('#p-paused').hidden = false;
+  saveSession();
 }
+
+// Called from a tap, so it can also re-unlock audio.
+function resumePlayer() {
+  if (!isPaused()) return;
+  if (!P._pausedUntimed) P.stepEndsAt = Date.now() + P.pausedRemaining * 1000;
+  P._pausedUntimed = false;
+  P.pausedRemaining = null;
+  P.lastWhole = null;
+  $('#p-paused').hidden = true;
+  Sound.unlock();
+  Wake.on();
+}
+
+function togglePause() { isPaused() ? resumePlayer() : pausePlayer(); }
 
 async function onClose() {
   const wasPaused = P.pausedRemaining != null;
@@ -1030,6 +1085,7 @@ async function finishPlayer() {
     toast('Stretch logged');
     return showTab('today');
   }
+  cue('done');
   const before = await weekSummary();
   const alreadyCounted = before.doneDates.has(P.workout.date);
   const log = await saveLog('completed');
@@ -1176,6 +1232,7 @@ function bindEvents() {
     } else if (act === 'test-cue') {
       Sound.unlock();
       setTimeout(() => cue('go'), 50);
+      setTimeout(() => { const d = $('#audio-debug'); if (d) d.textContent = audioDebugText(); }, 400);
     }
   });
 
@@ -1187,6 +1244,13 @@ function bindEvents() {
   $('#p-pause').addEventListener('click', togglePause);
   $('#p-paused').addEventListener('click', togglePause);
   $('#p-close').addEventListener('click', onClose);
+  // Opening the demo leaves the app (YouTube), so stop the clock first. The link still opens.
+  $('#p-demo').addEventListener('click', pausePlayer);
+
+  // Re-unlock audio on the next tap if iOS suspended or interrupted it.
+  document.addEventListener('touchend', () => {
+    if (Sound.ctx && Sound.ctx.state !== 'running') Sound.unlock();
+  }, { capture: true, passive: true });
 
   $('#c-done').addEventListener('click', () => { hideCompletion(); showTab('today'); });
   $('#c-stretch').addEventListener('click', e => {
@@ -1196,11 +1260,15 @@ function bindEvents() {
     startStretch(Number.isNaN(logId) ? null : logId);
   });
 
+  // Leaving the app pauses the workout. Coming back shows Paused until you tap.
+  window.addEventListener('pagehide', pausePlayer);
+  window.addEventListener('pageshow', () => Sound.resume());
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState !== 'visible') return;
+    if (document.visibilityState !== 'visible') return pausePlayer();
+    Sound.resume();
+    if (S.tab === 'me') { const d = $('#audio-debug'); if (d) d.textContent = audioDebugText(); }
     if (P.active) {
       Wake.on();
-      if (Sound.ctx && Sound.ctx.state !== 'running') Sound.ctx.resume().catch(() => {});
     } else if (S.todayKey && S.todayKey !== dateKey() && S.tab === 'today') {
       renderToday(); // the app was left open overnight
     }

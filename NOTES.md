@@ -21,6 +21,13 @@
 - **Storage and offline.** Data lives in IndexedDB, with localStorage as a fallback. A service worker makes the app work offline after the first load.
 - **Data model.** It already holds per-exercise progression state for Phase 2: rung, targets, ratings, pain flags, hidden exercises, and history.
 
+## Phase 1 fixes (v1.0.1, cache v2)
+
+From the first workout on the iPhone:
+- **Audio.** The app resumes the AudioContext when you come back to it and before every tone. If iOS left it suspended or interrupted, the next tap unlocks it again. The audio session is set to "playback" each time. Me shows a debug line under Test sound and flash with the AudioContext state, audioSession support, and the last tone.
+- **Auto-pause.** Tapping Watch demo pauses the timer before the link opens. Leaving the app also pauses it. When you come back, the Paused screen stays up until you tap.
+- **Flash.** The whole screen flashes in the accent color: 2 pulses of 300 ms when a timer ends, and again when the workout is done (with a done tone). A Flash strength setting (Subtle or Bold, default Bold) is under Me → Workout.
+
 ## Known issues / fix next
 
 1. **Not yet tested on a real iPhone.** Check on the phone:

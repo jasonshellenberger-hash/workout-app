@@ -230,6 +230,11 @@ svg { display: block; }
 .day-btn.on { background: var(--accent); color: var(--on-accent); }
 .day-btn:disabled { opacity: .35; }
 
+/* Segmented control (Flash strength) */
+.seg { display: flex; gap: 4px; padding: 3px; border-radius: 10px; background: var(--surface-raised); }
+.seg-btn { min-width: 72px; height: 34px; padding: 0 12px; border-radius: 8px; font-size: 15px; font-weight: 600; color: var(--text-muted); }
+.seg-btn.on { background: var(--accent); color: var(--on-accent); }
+
 /* Accent swatches */
 .swatches { display: flex; gap: 16px; padding: 16px; }
 .swatch { width: 44px; height: 44px; border-radius: 50%; position: relative; }
@@ -320,8 +325,10 @@ svg { display: block; }
 
 /* Screen flash: the visual cue for when sound is off or the phone is muted */
 .flash { position: fixed; inset: 0; z-index: 80; pointer-events: none; background: var(--accent); opacity: 0; }
-.flash.on { animation: flash 600ms ease-out; }
-@keyframes flash { 0% { opacity: 0; } 15% { opacity: .55; } 100% { opacity: 0; } }
+.flash.on.bold { animation: flash-bold 300ms ease-out 2; }
+.flash.on.subtle { animation: flash-subtle 300ms ease-out 2; }
+@keyframes flash-bold { 0% { opacity: 0; } 20% { opacity: .9; } 100% { opacity: 0; } }
+@keyframes flash-subtle { 0% { opacity: 0; } 20% { opacity: .35; } 100% { opacity: 0; } }
 
 /* ==========================================================================
    Completion moment
