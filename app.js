@@ -5,7 +5,7 @@
    Plan generator · workout player · completion logging · settings
    ========================================================================== */
 
-const APP_VERSION = '1.0.1';
+const APP_VERSION = '1.0.2';
 
 const DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DAY_LETTER = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
@@ -555,6 +555,7 @@ async function renderToday() {
           <span class="chip">${ICONS.clock}<span class="num">${fmtMinutes(log.durationSec)}</span></span>
           <span class="chip win">${ICONS.check}<span class="num">${log.setsDone} of ${log.setsPlanned} sets</span></span>
         </div>
+        ${workout ? `<button class="text-btn" data-action="start">${session && session.workoutId === today ? 'Resume extra session' : 'Train again'}</button>` : ''}
       </div>`;
     if (!log.stretchDone && workout?.blocks.some(b => b.kind === 'stretch')) {
       dock = `<button class="btn btn-secondary btn-xl" data-action="stretch">Stretch 5 min</button>`;

@@ -28,6 +28,8 @@ From the first workout on the iPhone:
 - **Auto-pause.** Tapping Watch demo pauses the timer before the link opens. Leaving the app also pauses it. When you come back, the Paused screen stays up until you tap.
 - **Flash.** The whole screen flashes in the accent color: 2 pulses of 300 ms when a timer ends, and again when the workout is done (with a done tone). A Flash strength setting (Subtle or Bold, default Bold) is under Me → Workout.
 
+- **Train again (v1.0.2, cache v3).** Once today's workout is done, Today shows a "Train again" link. It starts a fresh run of today's plan, with the same exercises and day type. Each extra session saves its own log, which shows in History but doesn't add to the week count. If you leave an extra session unfinished, the link reads "Resume extra session".
+
 ## Known issues / fix next
 
 1. **Not yet tested on a real iPhone.** Check on the phone:
