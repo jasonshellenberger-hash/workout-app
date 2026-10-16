@@ -111,9 +111,15 @@
       <span class="practice-badge" id="c-practice" hidden>Practice</span>
       <h1 class="c-title" id="c-title">Workout done</h1>
       <p class="c-sub" id="c-sub"></p>
+      <div class="c-stats">
       <div class="c-stat">
         <div class="c-num"><span id="c-count">0</span><span class="c-of" id="c-of"></span></div>
-        <div class="c-label">workouts this week</div>
+        <div class="c-label">this week</div>
+      </div>
+      <div class="c-stat">
+        <div class="c-num c-streak"><span class="c-flame"><svg viewBox="0 0 24 24"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg></span><span id="c-streak">0</span></div>
+        <div class="c-label">streak</div>
+      </div>
       </div>
     </div>
     <div class="c-actions">
@@ -141,12 +147,31 @@
     <button class="btn btn-primary btn-xl" id="lu-done">Nice</button>
   </div>
 
+  <!-- Weigh-in: anchored to the top so the keyboard never covers it -->
+  <div class="wsheet-root" id="wsheet" hidden>
+    <div class="sheet-backdrop" data-w="dismiss"></div>
+    <form class="wsheet" id="wsheet-form" autocomplete="off">
+      <div class="ws-title" id="ws-title">Sunday weigh-in</div>
+      <div class="ws-sub" id="ws-sub"></div>
+      <label class="ws-field">
+        <input id="ws-weight" type="text" inputmode="decimal" enterkeyhint="done" placeholder="0.0" aria-label="Weight in pounds">
+        <span>lb</span>
+      </label>
+      <div class="ws-hint num" id="ws-hint"></div>
+      <div class="ws-actions">
+        <button type="button" class="btn btn-secondary" id="ws-skip" data-w="skip">Skip</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </div>
+
   <div class="flash" id="flash" aria-hidden="true"></div>
   <div class="sheet-root" id="sheet-root" hidden></div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <script src="db.js"></script>
   <script src="adapt.js"></script>
+  <script src="track.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

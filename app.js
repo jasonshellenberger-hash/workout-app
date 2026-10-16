@@ -1,12 +1,12 @@
 'use strict';
 
 /* ==========================================================================
-   Workout PWA, Phase 2 (adaptation)
-   Plan generator · workout player · logging · check-in · progression · settings
-   The adaptation rules themselves live in adapt.js.
+   Workout PWA, Phase 3 (tracking)
+   Plan generator · workout player · logging · check-in · progression · weigh-ins · calendar · streak
+   The adaptation rules live in adapt.js; streak, calendar, and weight math in track.js.
    ========================================================================== */
 
-const APP_VERSION = '2.2.0';
+const APP_VERSION = '3.0.0';
 
 const DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DAY_LETTER = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
@@ -21,7 +21,7 @@ const ACCENTS = [
 
 const DEFAULT_SETTINGS = {
   key: 'app',
-  schemaVersion: 2,
+  schemaVersion: 3,
   equipment: ['db5', 'db10', 'db20', 'trx', 'jband', 'loopband', 'medball6', 'chair', 'bodyweight'],
   quietMode: true,            // always on; shown locked in Settings
   workoutDays: [1, 3, 5],     // Mon / Wed / Fri
@@ -32,6 +32,8 @@ const DEFAULT_SETTINGS = {
   flash: true,
   flashStrength: 'bold',      // 'bold' | 'subtle'
   includeStretch: false,
+  weighInPrompt: true,        // ask once each Sunday
+  weighInSkipped: null,       // the Sunday it was skipped
   restBetweenRoundsSec: 60,
   transitionSec: 15,
 };
@@ -98,6 +100,10 @@ const ICONS = {
   lock: '<svg viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
   volume: '<svg viewBox="0 0 24 24"><path d="M11 4.7a.7.7 0 0 0-1.2-.5L6.4 7.6A1.4 1.4 0 0 1 5.4 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.4a1.4 1.4 0 0 1 1 .4l3.4 3.4a.7.7 0 0 0 1.2-.5z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.4 18.4a9 9 0 0 0 0-12.7"/></svg>',
   history: '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>',
+  flame: '<svg viewBox="0 0 24 24"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>',
+  plus: '<svg viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></svg>',
+  chevronLeft: '<svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>',
+  chevronRight: '<svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>',
   levelUp: '<svg viewBox="0 0 24 24"><path d="m17 11-5-5-5 5"/><path d="m17 18-5-5-5 5"/></svg>',
   refresh: '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>',
   arrowDown: '<svg viewBox="0 0 24 24"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg>',
@@ -113,6 +119,9 @@ const S = {
   progression: {},   // ladderId → progression record
   adapt: null,       // DEFAULT_ADAPT shape, stored in settings under 'adapt'
   lastLog: null,     // the log the completion screen is showing
+  schedule: null,    // { periods: [{ from, days }] }: which workout days were in effect when
+  calMonth: null,    // History calendar: { y, m } shown
+  calSel: null,      // History calendar: selected day
   tab: 'today',
   todayKey: null,
 };
@@ -142,7 +151,12 @@ function workoutDays() { return (S.settings.workoutDays || []).filter(d => d !==
 function isWorkoutDay(dow) { return workoutDays().includes(dow); }
 // A rest day added after a Brutal session.
 function isForcedRest(dKey) { return (S.adapt?.restDates || []).includes(dKey); }
-function isPlannedDay(dKey) { return isWorkoutDay(parseKey(dKey).getDay()) && !isForcedRest(dKey); }
+// Past days use the workout days in effect then, so changing your days never rewrites history.
+function isPlannedDay(dKey) {
+  const dow = parseKey(dKey).getDay();
+  const days = !S.schedule || dKey >= dateKey() ? workoutDays() : Track.daysOn(S.schedule.periods, dKey);
+  return dow !== SATURDAY && days.includes(dow) && !isForcedRest(dKey);
+}
 
 function toast(msg) {
   const t = $('#toast');
@@ -442,7 +456,7 @@ async function loadSettings() {
   S.settings.workoutDays = (S.settings.workoutDays || []).filter(d => d !== SATURDAY);
   S.settings.quietMode = true;
   if (!saved || (saved.schemaVersion || 1) < DEFAULT_SETTINGS.schemaVersion) {
-    S.settings.schemaVersion = DEFAULT_SETTINGS.schemaVersion; // 1 → 2: new defaults merged in above
+    S.settings.schemaVersion = DEFAULT_SETTINGS.schemaVersion; // 1 → 2 → 3: new defaults merged in above
     await DB.put('settings', S.settings);
   }
 }
@@ -459,11 +473,31 @@ async function loadAdapt() {
 
 function saveAdapt() { return DB.put('settings', { ...S.adapt, key: 'adapt' }); }
 
+// First run of Phase 3: today's days stand for all of history (there was no record before).
+async function loadSchedule() {
+  const saved = await DB.get('settings', 'schedule');
+  S.schedule = saved || { key: 'schedule', periods: [{ from: '2000-01-01', days: workoutDays() }] };
+  if (!saved) await DB.put('settings', S.schedule);
+}
+
+// A change of workout days starts a new period today.
+async function recordSchedule() {
+  const days = workoutDays();
+  const periods = S.schedule.periods;
+  const last = periods[periods.length - 1];
+  if (JSON.stringify(last.days) === JSON.stringify(days)) return;
+  const today = dateKey();
+  if (last.from === today) last.days = days;
+  else periods.push({ from: today, days });
+  await DB.put('settings', S.schedule);
+}
+
 async function saveSettings(patch) {
   Object.assign(S.settings, patch);
   S.settings.workoutDays = S.settings.workoutDays.filter(d => d !== SATURDAY);
   S.settings.finisherDays = (S.settings.finisherDays || []).filter(d => S.settings.workoutDays.includes(d));
   await DB.put('settings', S.settings);
+  if ('workoutDays' in patch) await recordSchedule();
   applyAccent();
   await invalidateTodayPlan();
 }
@@ -538,6 +572,21 @@ function circuitSetsDone(log) {
 function countsAsWorkout(log) {
   if (!log.exercises?.length) return log.status === 'completed';
   return circuitSetsDone(log) > 0;
+}
+
+// What the calendar and streak need, from every log. Only logs with circuit sets count.
+async function historyFacts() {
+  const logs = await DB.getAll('logs');
+  const counted = logs.filter(countsAsWorkout);
+  const done = new Set(counted.filter(l => l.status === 'completed').map(l => l.date));
+  const partial = new Set(counted.filter(l => l.status !== 'completed' && !done.has(l.date)).map(l => l.date));
+  const first = logs.map(l => l.date).sort()[0] || null;
+  return { logs, done, partial, first };
+}
+
+async function currentStreak(facts) {
+  const f = facts || await historyFacts();
+  return Track.streak({ today: dateKey(), first: f.first, done: f.done, partial: f.partial, planned: isPlannedDay });
 }
 
 async function logsFor(dKey) {
@@ -753,10 +802,14 @@ async function renderToday() {
   }
 
   const wk = await weekSummary(now);
+  const sk = await currentStreak();
   const weekHtml = `
     <div class="card">
       <div class="week-head">
-        <div class="muted">This week</div>
+        <div class="week-left">
+          <div class="muted">This week</div>
+          <span class="streak ${sk.count ? '' : 'zero'}" aria-label="Streak: ${sk.count} workouts">${ICONS.flame}<span class="num">${sk.count}</span></span>
+        </div>
         <div class="big">${wk.done}<span class="of"> of ${wk.planned}</span></div>
       </div>
       <div class="week">
@@ -818,20 +871,8 @@ async function rampCard() {
 }
 
 /* ---------- History ---------- */
-async function renderHistory() {
-  const logs = (await DB.getAll('logs')).sort((a, b) => (b.startedAt || '').localeCompare(a.startedAt || ''));
-  const completed = logs.filter(l => l.status === 'completed');
-  const wk = await weekSummary();
-  let html = largeTitle('History');
-  html += `
-    <div class="stat-row">
-      <div class="card stat"><div class="stat-num">${wk.done}<span class="muted" style="font-size:20px"> / ${wk.planned}</span></div><div class="stat-label">This week</div></div>
-      <div class="card stat"><div class="stat-num">${completed.length}</div><div class="stat-label">All workouts</div></div>
-    </div>`;
-  if (!logs.length) {
-    html += `<div class="empty">${ICONS.history}<strong>No workouts yet</strong>Finished workouts show up here.</div>`;
-  } else {
-    html += `<div class="section-label">Workouts</div><div class="group">` + logs.map(l => `
+function logRow(l) {
+  return `
       <div class="row log-row">
         <div class="row-main">
           <div class="row-title">${esc(l.name || DAY_TYPES[l.dayType]?.name || 'Workout')}</div>
@@ -840,9 +881,89 @@ async function renderHistory() {
           ${levelUpText(l) ? `<div class="row-sub levelup-line">${ICONS.levelUp}${esc(levelUpText(l))}</div>` : ''}
         </div>
         <span class="pill ${l.status === 'completed' ? 'win' : 'caution'}">${l.status === 'completed' ? 'Done' : 'Partial'}</span>
-      </div>`).join('') + `</div>`;
+      </div>`;
+}
+
+const CAL_TEXT = {
+  done: 'Done', partial: 'Partial workout', missed: 'Missed', today: 'Planned for today',
+  upcoming: 'Planned', rest: 'Rest day', none: 'Before your first workout',
+};
+
+function calendarHtml(f, today) {
+  const t = parseKey(today);
+  S.calMonth ||= { y: t.getFullYear(), m: t.getMonth() };
+  const { y, m } = S.calMonth;
+  const first = f.first ? parseKey(f.first) : t;
+  const canPrev = y * 12 + m > first.getFullYear() * 12 + first.getMonth();
+  const canNext = y * 12 + m < t.getFullYear() * 12 + t.getMonth();
+  const title = new Date(y, m, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  const cells = Track.monthGrid(y, m).flat().map(({ key, inMonth }) => {
+    const state = Track.dayState({ key, today, first: f.first, done: f.done, partial: f.partial, planned: isPlannedDay });
+    const cls = ['cal-day', state, inMonth ? '' : 'out', key === S.calSel ? 'sel' : ''].filter(Boolean).join(' ');
+    return `<button class="${cls}" data-cal-day="${key}" aria-label="${esc(fmtShortDate(parseKey(key)))}: ${CAL_TEXT[state]}">${parseKey(key).getDate()}</button>`;
+  }).join('');
+  return `
+    <div class="card cal">
+      <div class="cal-head">
+        <button class="cal-nav" data-cal-move="-1" aria-label="Previous month" ${canPrev ? '' : 'disabled'}>${ICONS.chevronLeft}</button>
+        <div class="cal-title">${esc(title)}</div>
+        <button class="cal-nav" data-cal-move="1" aria-label="Next month" ${canNext ? '' : 'disabled'}>${ICONS.chevronRight}</button>
+      </div>
+      <div class="cal-grid">
+        ${DAY_LETTER.map(l => `<div class="cal-wd">${l}</div>`).join('')}
+        ${cells}
+      </div>
+      <div class="cal-legend">
+        <span><i class="lg done"></i>Done</span><span><i class="lg partial"></i>Partial</span>
+        <span><i class="lg missed"></i>Missed</span><span><i class="lg upcoming"></i>Planned</span>
+      </div>
+    </div>`;
+}
+
+async function renderHistory() {
+  const f = await historyFacts();
+  const logs = [...f.logs].sort((a, b) => (b.startedAt || '').localeCompare(a.startedAt || ''));
+  const completed = logs.filter(l => l.status === 'completed' && countsAsWorkout(l));
+  const wk = await weekSummary();
+  const sk = await currentStreak(f);
+  const today = dateKey();
+  let html = largeTitle('History');
+  html += `
+    <div class="stat-row three">
+      <div class="card stat"><div class="stat-num">${wk.done}<span class="muted" style="font-size:18px"> / ${wk.planned}</span></div><div class="stat-label">This week</div></div>
+      <div class="card stat"><div class="stat-num streak-num">${ICONS.flame}${sk.count}</div><div class="stat-label">Streak</div>${sk.oneMiss && sk.count ? `<div class="stat-hint">Don't miss next</div>` : ''}</div>
+      <div class="card stat"><div class="stat-num">${completed.length}</div><div class="stat-label">All workouts</div></div>
+    </div>
+    <div class="section-foot">Streak: one missed day is fine, two in a row resets it. Rest days never count against you.</div>
+    <div style="height:12px"></div>` + calendarHtml(f, today);
+  if (S.calSel) {
+    const dayLogs = logs.filter(l => l.date === S.calSel);
+    const state = Track.dayState({ key: S.calSel, today, first: f.first, done: f.done, partial: f.partial, planned: isPlannedDay });
+    html += `<div class="section-label">${esc(fmtLongDate(parseKey(S.calSel)))}</div>` + (dayLogs.length
+      ? `<div class="group">${dayLogs.map(logRow).join('')}</div>`
+      : `<div class="group"><div class="row"><div class="row-main"><div class="row-title">${CAL_TEXT[state]}</div></div></div></div>`);
+  }
+  if (!logs.length) {
+    html += `<div class="empty">${ICONS.history}<strong>No workouts yet</strong>Finished workouts show up here.</div>`;
+  } else {
+    html += `<div class="section-label">Workouts</div><div class="group">` + logs.map(logRow).join('') + `</div>`;
   }
   $('#view-history').innerHTML = html;
+}
+
+function onHistoryClick(e) {
+  const move = e.target.closest('[data-cal-move]');
+  if (move && !move.disabled) {
+    const { y, m } = S.calMonth;
+    const d = new Date(y, m + Number(move.dataset.calMove), 1);
+    S.calMonth = { y: d.getFullYear(), m: d.getMonth() };
+    return renderHistory();
+  }
+  const day = e.target.closest('[data-cal-day]');
+  if (day) {
+    S.calSel = S.calSel === day.dataset.calDay ? null : day.dataset.calDay;
+    renderHistory();
+  }
 }
 
 // "Just right · Knees fine", or "" for a log with no check-in (every Phase 1 log).
@@ -865,6 +986,149 @@ function levelUpText(log) {
 function renderFood() {
   $('#view-food').innerHTML = largeTitle('Food') + `
     <div class="card empty">${ICONS.utensils}<strong>Coming soon</strong>Meal ratings, protein, and the lunch plan arrive in a later phase.</div>`;
+}
+
+/* ---------- Me → Body: weekly weigh-ins (SPEC.md → Weight tracking) ---------- */
+const fmtLb = n => n.toFixed(1);
+const signedLb = n => n == null ? '–' : `${n > 0.04 ? '+' : n < -0.04 ? '−' : '±'}${Math.abs(n).toFixed(1)} lb`;
+const shortDate = key => parseKey(key).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+
+async function bodyHtml() {
+  const entries = (await DB.getAll('body')).filter(e => e.weightLb > 0).sort((a, b) => (b.at || '').localeCompare(a.at || ''));
+  const points = Track.weeklySeries(entries);
+  const sum = Track.weightSummary(points);
+  const card = sum ? `
+    <div class="card body-card">
+      <div class="body-num num">${fmtLb(sum.current)}<span class="unit"> lb</span></div>
+      <div class="muted">${sum.averaged ? '4-week average' : 'Latest weekly weigh-in'}</div>
+      <div class="body-stats">
+        <div><div class="body-stat-label">Last 4 weeks</div><div class="body-stat num">${signedLb(sum.change4)}</div></div>
+        <div><div class="body-stat-label">Since start</div><div class="body-stat num">${signedLb(sum.sinceStart)}</div></div>
+      </div>
+      ${points.length >= 2 ? weightChart(points.slice(-12)) : '<p class="muted body-wait">The chart starts after your second weekly weigh-in.</p>'}
+    </div>` : `
+    <div class="card body-card"><p class="muted" style="margin:0">Weigh in on Sunday mornings, first thing. The trend shows up here.</p></div>`;
+  const list = entries.length ? `
+    <div class="section-label">Recent weigh-ins</div>
+    <div class="group">${entries.slice(0, 8).map(e => `
+      <button class="row entry-row" data-body-id="${e.id}">
+        <div class="row-main"><div class="row-title num">${fmtLb(e.weightLb)} lb</div><div class="row-sub">${esc(fmtShortDate(parseKey(e.date)))}${e.prompted ? ' · Sunday weigh-in' : ''}</div></div>
+      </button>`).join('')}
+    </div>
+    <div class="section-foot">Tap an entry to delete it.</div>` : '';
+  return `
+    <div class="section-label">Body</div>
+    ${card}
+    <div class="group" style="margin-top:12px">
+      <button class="row btn-row" data-action="weigh-in">${ICONS.plus}<span>Add weigh-in</span></button>
+      ${switchRow('Sunday weigh-in prompt', 'weighInPrompt', { sub: 'Asks once each Sunday when you open the app' })}
+    </div>
+    ${list}`;
+}
+
+// Weekly weigh-ins as dots, the 4-week average as a line. Plain SVG, so it works offline.
+function weightChart(points) {
+  const W = 320, H = 168, L = 34, R = 10, T = 8, B = 24;
+  const vals = points.flatMap(p => [p.weightLb, p.avg]);
+  let lo = Math.min(...vals) - 0.5, hi = Math.max(...vals) + 0.5;
+  const step = [1, 2, 5, 10, 20].find(s => (hi - lo) / s <= 4) || 50;
+  lo = Math.floor(lo / step) * step;
+  hi = Math.ceil(hi / step) * step;
+  const x = i => L + (points.length === 1 ? (W - L - R) / 2 : i * (W - L - R) / (points.length - 1));
+  const y = v => T + (hi - v) * (H - T - B) / (hi - lo);
+  const grid = [];
+  for (let v = lo; v <= hi + 1e-9; v += step) {
+    grid.push(`<line class="ch-grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text class="ch-ylab" x="${L - 6}" y="${y(v) + 4}">${v}</text>`);
+  }
+  const xl = [0, points.length - 1];
+  if (points.length > 4) xl.splice(1, 0, Math.floor((points.length - 1) / 2));
+  const xlabs = xl.map(i => `<text class="ch-xlab" x="${x(i)}" y="${H - 6}" text-anchor="${i === 0 ? 'start' : i === points.length - 1 ? 'end' : 'middle'}">${esc(shortDate(points[i].date))}</text>`).join('');
+  const line = points.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)} ${y(p.avg).toFixed(1)}`).join(' ');
+  const dots = points.map((p, i) => `<circle class="ch-dot" data-i="${i}" cx="${x(i)}" cy="${y(p.weightLb)}" r="4"/>`).join('');
+  const half = points.length > 1 ? (W - L - R) / (points.length - 1) / 2 : (W - L - R) / 2;
+  const hits = points.map((p, i) => `<rect class="ch-hit" data-chart-i="${i}" x="${x(i) - half}" y="0" width="${half * 2}" height="${H}"/>`).join('');
+  const last = points.length - 1;
+  return `
+    <div class="chart" data-points="${esc(JSON.stringify(points.map(p => [p.date, p.weightLb, p.avg])))}">
+      <div class="chart-legend"><span><i class="lg-dot"></i>Weekly weigh-in</span><span><i class="lg-line"></i>4-week average</span></div>
+      <div class="chart-tip num" aria-live="polite">${chartTip(points[last].date, points[last].weightLb, points[last].avg)}</div>
+      <svg class="ch" viewBox="0 0 ${W} ${H}" role="img" aria-label="Weekly weight, last ${points.length} weeks">
+        ${grid.join('')}${xlabs}
+        <line class="ch-cross" x1="${x(last)}" x2="${x(last)}" y1="${T}" y2="${H - B}"/>
+        <path class="ch-avg" d="${line}"/>
+        ${dots}${hits}
+      </svg>
+    </div>`;
+}
+
+function chartTip(date, w, avg) {
+  return `${esc(shortDate(date))} · <strong>${fmtLb(w)} lb</strong> · avg ${fmtLb(avg)}`;
+}
+
+// Tap or hover a week to read its numbers.
+function onChartPoint(e) {
+  const hit = e.target.closest('[data-chart-i]');
+  if (!hit) return;
+  const chart = hit.closest('.chart');
+  const i = Number(hit.dataset.chartI);
+  const [date, w, avg] = JSON.parse(chart.dataset.points)[i];
+  chart.querySelector('.chart-tip').innerHTML = chartTip(date, w, avg);
+  const cx = chart.querySelector(`.ch-dot[data-i="${i}"]`).getAttribute('cx');
+  const cross = chart.querySelector('.ch-cross');
+  cross.setAttribute('x1', cx);
+  cross.setAttribute('x2', cx);
+  chart.querySelectorAll('.ch-dot').forEach(d => d.classList.toggle('on', d.dataset.i === String(i)));
+}
+
+/* ---------- Weigh-in sheet ---------- */
+const Weigh = {
+  prompted: false,
+  async open({ prompted = false } = {}) {
+    this.prompted = prompted;
+    const last = (await DB.getAll('body')).filter(e => e.weightLb > 0).sort((a, b) => (a.at || '').localeCompare(b.at || '')).pop();
+    const lastWeek = last && Track.weekStartKey(last.date) < Track.weekStartKey(dateKey());
+    $('#ws-title').textContent = prompted ? 'Sunday weigh-in' : 'Add weigh-in';
+    $('#ws-sub').textContent = prompted ? 'First thing, same conditions as last week.' : 'Extra entries are fine. The chart uses one per week.';
+    $('#ws-hint').textContent = last ? `${lastWeek ? 'Last week' : 'Last entry'}: ${fmtLb(last.weightLb)} lb` : '';
+    $('#ws-hint').classList.remove('error');
+    $('#ws-skip').textContent = prompted ? 'Skip' : 'Cancel';
+    const input = $('#ws-weight');
+    input.value = '';
+    $('#wsheet').hidden = false;
+    input.focus();
+  },
+  close() {
+    $('#ws-weight').blur();
+    $('#wsheet').hidden = true;
+  },
+  async save() {
+    const v = parseFloat($('#ws-weight').value.replace(',', '.'));
+    if (!(v >= 50 && v <= 700)) {
+      const hint = $('#ws-hint');
+      hint.textContent = 'Enter your weight in lb, like 204.6';
+      hint.classList.add('error');
+      return;
+    }
+    await DB.put('body', { date: dateKey(), at: new Date().toISOString(), weightLb: Math.round(v * 10) / 10, prompted: this.prompted });
+    this.close();
+    toast('Weigh-in saved');
+    if (S.tab === 'me') renderMe();
+  },
+  async skip() {
+    // Written directly: saveSettings would rebuild today's plan, which a skip has no reason to touch.
+    if (this.prompted) { S.settings.weighInSkipped = dateKey(); await DB.put('settings', S.settings); }
+    this.close();
+  },
+};
+
+// Sundays only, once: until you save or tap Skip. Never while something else is on screen.
+async function maybeAskWeighIn() {
+  const today = dateKey();
+  if (!S.settings.weighInPrompt || parseKey(today).getDay() !== 0 || S.settings.weighInSkipped === today) return;
+  const busy = P.active || ['#checkin', '#complete', '#levelup', '#sheet-root', '#wsheet'].some(sel => !$(sel).hidden);
+  if (busy) return;
+  if ((await DB.getAll('body')).some(e => e.date === today)) return;
+  Weigh.open({ prompted: true });
 }
 
 /* ---------- Me / Settings ---------- */
@@ -893,7 +1157,7 @@ async function renderMe() {
     const sub = [`${ex.name}${l.id === 'armCare' ? '' : ` · rung ${idx + 1} of ${l.rungs.length}`}`, ...hidden].join(' · ');
     return `<div class="row"><div class="row-main"><div class="row-title">${esc(l.pattern)}</div><div class="row-sub">${esc(sub)}</div></div><span class="row-value num">${esc(l.id === 'conditioning' ? '30s on' : targetText(item))}</span></div>`;
   }).join('');
-  const html = largeTitle('Me') + `
+  const html = largeTitle('Me') + await bodyHtml() + `
     <div class="section-label">Workout days</div>
     <div class="group">
       <div class="days">
@@ -978,6 +1242,12 @@ function audioDebugText() {
 }
 
 async function onMeClick(e) {
+  const entry = e.target.closest('[data-body-id]');
+  if (entry) {
+    const choice = await actionSheet({ title: 'Delete this weigh-in?', actions: [{ label: 'Delete', value: 'delete', destructive: true }] });
+    if (choice === 'delete') { await DB.delete('body', Number(entry.dataset.bodyId)); toast('Deleted'); }
+    return renderMe();
+  }
   const day = e.target.closest('[data-day]');
   if (day) {
     const d = Number(day.dataset.day);
@@ -1361,15 +1631,17 @@ async function finishPlayer() {
   }
   cue('done');
   const before = await weekSummary();
+  const streakBefore = (await currentStreak()).count;
   if (P.practice) {
     closePlayer();
-    return showCompletion(practiceLog('completed'), before.done, before.done, before.planned);
+    return showCompletion(practiceLog('completed'), before.done, before.done, before.planned, streakBefore, streakBefore);
   }
-  const alreadyCounted = before.doneDates.has(P.workout.date);
   const log = await saveLog('completed');
   await DB.delete('settings', 'session');
+  const after = await weekSummary();
+  const streakAfter = (await currentStreak()).count;
   closePlayer();
-  showCompletion(log, before.done, alreadyCounted ? before.done : before.done + 1, before.planned);
+  showCompletion(log, before.done, after.done, before.planned, streakBefore, streakAfter);
 }
 
 /* ---------- Logging ---------- */
@@ -1438,7 +1710,7 @@ async function markStretchDone(logId) {
 }
 
 /* ---------- Completion moment ---------- */
-function showCompletion(log, fromCount, toCount, planned) {
+function showCompletion(log, fromCount, toCount, planned, streakFrom = 0, streakTo = streakFrom) {
   S.lastLog = log;
   const el = $('#complete');
   $('#c-title').textContent = log.practice ? 'Practice done' : 'Workout done';
@@ -1448,6 +1720,9 @@ function showCompletion(log, fromCount, toCount, planned) {
   count.textContent = fromCount;
   count.classList.remove('tick');
   $('#c-of').textContent = ` of ${planned}`;
+  const streak = $('#c-streak');
+  streak.textContent = streakFrom;
+  streak.classList.remove('tick');
   const stretchBtn = $('#c-stretch');
   const canStretch = !log.practice && !log.stretchDone && P.workout.blocks.some(b => b.kind === 'stretch');
   stretchBtn.hidden = !canStretch;
@@ -1463,6 +1738,11 @@ function showCompletion(log, fromCount, toCount, planned) {
       count.textContent = toCount;
       void count.offsetWidth;
       count.classList.add('tick');
+    }
+    if (streakTo !== streakFrom) {
+      streak.textContent = streakTo;
+      void streak.offsetWidth;
+      streak.classList.add('tick');
     }
   }, 1050);
 }
@@ -1799,6 +2079,8 @@ function bindEvents() {
       S.adapt.rampDismissed = dateKey(weekStart());
       await saveAdapt();
       renderToday();
+    } else if (act === 'weigh-in') {
+      Weigh.open({ prompted: false });
     } else if (act === 'update') {
       Update.apply();
     } else if (act === 'export') {
@@ -1811,6 +2093,15 @@ function bindEvents() {
   });
 
   $('#view-me').addEventListener('click', onMeClick);
+  $('#view-me').addEventListener('click', onChartPoint);
+  $('#view-me').addEventListener('pointermove', onChartPoint);
+  $('#view-history').addEventListener('click', onHistoryClick);
+  $('#wsheet-form').addEventListener('submit', e => { e.preventDefault(); Weigh.save(); });
+  $('#wsheet').addEventListener('click', e => {
+    const w = e.target.closest('[data-w]')?.dataset.w;
+    if (w === 'skip') Weigh.skip();
+    else if (w === 'dismiss') Weigh.close(); // backdrop: not a skip, so it can ask again next time
+  });
   $('#view-me').addEventListener('change', onMeChange);
 
   $('#p-done').addEventListener('click', onDone);
@@ -1845,9 +2136,10 @@ function bindEvents() {
     if (S.tab === 'me') { const d = $('#audio-debug'); if (d) d.textContent = audioDebugText(); }
     if (P.active) {
       Wake.on();
-    } else if (S.todayKey && S.todayKey !== dateKey() && S.tab === 'today') {
-      renderToday(); // the app was left open overnight
+      return;
     }
+    if (S.todayKey && S.todayKey !== dateKey() && S.tab === 'today') renderToday(); // the app was left open overnight
+    maybeAskWeighIn();
   });
 }
 
@@ -1855,12 +2147,14 @@ async function boot() {
   await DB.init();
   await loadSettings();
   await loadAdapt();
+  await loadSchedule();
   applyAccent();
   await loadExercises();
   await loadProgression();
   await finalizeStaleSession();
   bindEvents();
   await showTab('today');
+  maybeAskWeighIn();
 
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     Update.register().catch(err => console.warn('SW registration failed', err));

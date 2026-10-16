@@ -104,18 +104,49 @@ The rules live in `adapt.js` as pure functions. `app.js` handles the screens and
 - **Checking:** the app checks for a new version on launch and whenever it comes back to the foreground.
 - **First install:** the very first install just caches, with no banner and no reload.
 
+## Phase 3: tracking (v3.0.0, cache v8)
+
+The math lives in `track.js` as pure functions. `app.js` handles the screens and storage.
+
+- **Weekly weigh-in.**
+  - **The prompt:** on Sundays, a "Sunday weigh-in" sheet drops in from the top when you open the app, so the keyboard never covers it.
+  - **The field:** it starts empty, with "Last week: X lb" as a hint below it. It accepts a comma or a dot, and anything outside 50–700 lb shows an error.
+  - **Dismissing:** **Skip** stops it asking for the rest of that Sunday. Tapping outside the sheet only closes it, so it asks again the next time you open the app.
+  - **Turning it off:** use the switch at Me → Body.
+  - **Extra entries:** you can add them any time from Me → **Add weigh-in**. Weight never appears on Today.
+- **Me → Body:**
+  - **Summary card:** the current weight, the change over the last 4 weeks, and the change since the start.
+  - **Averaging:** the summary uses 4-week averages once there are 5+ weekly weigh-ins. Before that, it uses the latest vs the first.
+  - **Chart:** plain SVG, so it works offline. It shows the last 12 weeks: a dot per weekly weigh-in plus the 4-week average line. Tap or hover a week to read its numbers.
+  - **One point per week:** the Sunday entry, or the week's first entry if there was no Sunday one.
+  - **Recent entries:** tap one to delete it.
+- **Streak ("Never miss twice"):**
+  - **Counting:** at most 1 workout per calendar day.
+  - **Misses:** a single missed planned day doesn't break it, but 2 missed planned days in a row do. A day with only a partial workout doesn't add to the count, but it clears a pending miss.
+  - **What never counts as a miss:** rest days, Saturdays, Brutal rest days, and today before it's over.
+  - **What never counts at all:** warm-up-only logs and practice runs.
+  - **Where it shows:** a flame chip on Today's week card, a stat on History (with "Don't miss next" after a miss), and the completion screen, where it ticks up.
+- **History calendar:**
+  - **Day states:** Done (green), Partial (amber ring), Missed (red dot), Planned (outline), and Today (accent ring). Days before your first workout are blank.
+  - **Navigation:** ‹ › moves between months, from your first workout's month to now.
+  - **Tapping a day** shows its workouts below.
+- **Schedule history:**
+  - A new `schedule` settings record keeps which workout days were in effect when. Past days use the days in effect then, so changing your days (or the ramp moving you up) never rewrites past weeks.
+  - This fixes the old issue where ramp weeks used your current workout days.
+  - On first launch of Phase 3, your current days stand in for all earlier history.
+- **Storage:** IndexedDB version 2 adds a `body` store, and export includes it. Settings schema is now 3.
+
 ## Known issues / fix next
 
-1. **Phase 2 not yet tested on the iPhone.**
+1. **Phase 3 not yet tested on the iPhone.**
 2. **Audio session "playback" may pause other audio.** Music or a podcast from another app may stop when the tone plays. A possible fix is a setting to switch to "ambient", which mixes with other audio but respects silent mode.
 3. **Ending early, then restarting.** After you end a workout early, Today offers "Start workout" again, and finishing that creates a second log for the same day. History will show both. A fix would merge them, or resume from the partial log.
 4. **Workouts left open past midnight.** A workout left unfinished overnight is saved as partial with a duration of 0.
 5. **Session times are estimates,** at about 3 s per rep (more for tempo moves). Adjust after timing a few real sessions.
-6. **The first update after v2.1.1 has no banner yet.** The v2.1.1 app on the phone doesn't have the banner code, so the v2.2.0 update installs and waits. Swipe the app closed and reopen it once to switch over. Every update after that shows the banner.
-7. **Export only, no import.** Restore comes in Phase 4.
-8. **Missed check-ins stay unrated.** A check-in skipped with Later and never done by midnight stays `null`. Starting "Train again" before checking in also leaves the earlier session unrated.
-9. **Ramp weeks use your current workout days.** Changing your days mid-phase changes how many workouts past weeks count as planned.
-10. **The "Which ones, and why?" list can be long** after ending early, because it lists every unfinished exercise, including arm care. You can skip any of them.
+6. **Export only, no import.** Restore comes in Phase 4.
+7. **Missed check-ins stay unrated.** A check-in skipped with Later and never done by midnight stays `null`. Starting "Train again" before checking in also leaves the earlier session unrated.
+8. **The "Which ones, and why?" list can be long** after ending early, because it lists every unfinished exercise, including arm care. You can skip any of them.
+9. **Phase 5 will adjust the streak.** The "Just show up" minimum workout will count toward it, and excused skips won't count as misses.
 
 ## Deploy steps (not done yet)
 

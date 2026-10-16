@@ -2,7 +2,7 @@
 
 A personal iPhone workout app (PWA): quiet 15–22 minute home workouts, a guided player with timers, and a local log. Plain HTML, CSS, and JavaScript. No framework and no build step. All data stays on the phone.
 
-**Phase 2 (this version):** everything in Phase 1 (plan generator, workout player with timers, completion logging, equipment list, quiet mode, data export) plus the post-workout check-in, per-exercise progression, and the 3 → 5 day ramp. See `SPEC.md` (kept local, not in the repo) for later phases.
+**Phase 3 (this version):** everything in Phases 1–2 (plan generator, workout player with timers, logging, check-in, per-exercise progression, the 3 → 5 day ramp, data export) plus the weekly weigh-in with a 4-week average chart, a history calendar, and the "never miss twice" streak. See `SPEC.md` (kept local, not in the repo) for later phases.
 
 ## Files
 
