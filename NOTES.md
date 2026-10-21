@@ -136,6 +136,24 @@ The math lives in `track.js` as pure functions. `app.js` handles the screens and
   - On first launch of Phase 3, your current days stand in for all earlier history.
 - **Storage:** IndexedDB version 2 adds a `body` store, and export includes it. Settings schema is now 3.
 
+## Check-in redesign (v3.1.0, cache v9)
+
+This replaces the Phase 2 check-in questions and rating rules above. The pain, "No time", knees, rest-day, and ramp-timing rules are unchanged.
+
+- **Screen 1, "How did each one feel?"** One row per circuit and finisher exercise, each with Easy · Fine · Hard · Didn't finish.
+  - Every row starts on Fine. A row with skipped or unstarted sets starts on Didn't finish, so a workout ended early uses the same screen.
+  - Didn't finish opens Too hard / Pain / No time on that row. Picking a reason is optional, and no reason changes nothing.
+- **Screen 2, "Overall?"** Good / Wiped out. **Screen 3:** "Knees today?" Practice adds the "What would change" preview.
+- **Rules, pure double progression:**
+  - Easy adds 1 step (1 rep, 5 s, or 1 conditioning point). Fine and Hard hold.
+  - If every row is Fine, the exercise lowest in its range gets +1.
+  - Wiped out takes 2 off every finished row (overriding Easy) and makes the next day a rest day.
+  - Too easy and the 2-Too-easy rung shortcut are gone.
+  - Arm care isn't rated: it gets +1 rep at the first check-in of each week where all its sets were done, unless that check-in was Wiped out.
+- **In a row:** two check-ins in a row with a Hard row or Wiped out make the next workout lighter. Two Wiped out in a row on the same day type move those exercises down a rung.
+- **Ramp:** a strong week is 80%+ done with at least one rated check-in and no more than one Wiped out. A rough week is under 60% done or 2+ Wiped out.
+- **Old check-ins** (`v: 1`, rated 1–5) stay as saved. `Adapt.flags()` reads both kinds for every in-a-row rule and the ramp: Brutal counts as Wiped out, Hard counts as Hard, other ratings have no special effect, and a null rating is unrated. History shows old ratings with Brutal renamed Wiped out.
+
 ## Known issues / fix next
 
 1. **Phase 3 not yet tested on the iPhone.**

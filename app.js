@@ -6,7 +6,7 @@
    The adaptation rules live in adapt.js; streak, calendar, and weight math in track.js.
    ========================================================================== */
 
-const APP_VERSION = '3.0.0';
+const APP_VERSION = '3.1.0';
 
 const DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DAY_LETTER = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
@@ -73,10 +73,10 @@ const PHASE_DAYS = { 1: [1, 3, 5], 2: [0, 1, 3, 5], 3: [0, 1, 3, 4, 5] };
 const DEFAULT_ADAPT = {
   key: 'adapt',
   shortNext: false,     // "No time" → drop one circuit exercise and the finisher
-  lightNext: false,     // 2 Hard/Brutal in a row → −2 reps, no finisher
+  lightNext: false,     // 2 Hard/Wiped out in a row → −2 reps, no finisher
   lightLegsNext: false, // knees 2+ twice → −2 reps on leg moves
   kneeSwap: [],         // lower-body ladders to swap for Knee support next time
-  restDates: [],        // rest days added after a Brutal session
+  restDates: [],        // rest days added after a Wiped out session
   phaseSince: null,     // when the current training phase started; earlier weeks never count toward the ramp
   rampDismissed: null,  // week start of the last "Not yet"
 };
@@ -149,7 +149,7 @@ function fmtClock(sec) { sec = Math.max(0, Math.ceil(sec)); return sec >= 60 ? `
 
 function workoutDays() { return (S.settings.workoutDays || []).filter(d => d !== SATURDAY).sort(); }
 function isWorkoutDay(dow) { return workoutDays().includes(dow); }
-// A rest day added after a Brutal session.
+// A rest day added after a Wiped out session.
 function isForcedRest(dKey) { return (S.adapt?.restDates || []).includes(dKey); }
 // Past days use the workout days in effect then, so changing your days never rewrites history.
 function isPlannedDay(dKey) {
@@ -557,7 +557,7 @@ async function rampWeeks() {
     weeks.push({
       planned: keys.filter(isPlannedDay).length,
       done: new Set(inWeek.filter(l => l.status === 'completed' && countsAsWorkout(l)).map(l => l.date)).size,
-      ratings: inWeek.filter(countsAsWorkout).map(l => l.checkIn?.rating).filter(Boolean),
+      checks: inWeek.filter(countsAsWorkout).map(l => Adapt.flags(l.checkIn)).filter(f => f.rated),
     });
   }
   return weeks;
@@ -795,7 +795,7 @@ async function renderToday() {
       <div class="card hero hero-rest">
         <div class="rest-icon">${ICONS.moon}</div>
         <div class="hero-title">Rest day</div>
-        <p>${isForcedRest(today) && isWorkoutDay(dow) ? 'Recovering from a Brutal session. Walk, stretch, or nothing.' : 'Walk, stretch, or nothing.'}</p>
+        <p>${isForcedRest(today) && isWorkoutDay(dow) ? 'Recovering from a Wiped out session. Walk, stretch, or nothing.' : 'Walk, stretch, or nothing.'}</p>
         ${next ? `<p style="margin-top:10px">Next workout: <strong style="color:var(--text)">${esc(next)}</strong></p>` : ''}
         <button class="text-btn" data-action="train-anyway">Train anyway</button>
       </div>`;
@@ -966,12 +966,22 @@ function onHistoryClick(e) {
   }
 }
 
-// "Just right · Knees fine", or "" for a log with no check-in (every Phase 1 log).
+// "Good · Push-up easy · Box squat didn't finish (pain) · Knees fine", or "" for a log with no check-in
+// (every Phase 1 log). Old v1 check-ins show their 1–5 rating, with Brutal now called Wiped out.
 function checkInText(log) {
   const ci = log.checkIn;
   if (!ci) return '';
-  const r = ci.rating ? Adapt.RATINGS[ci.rating] : '';
-  const how = ci.finishedAll === false ? `Not all${r ? `, rest ${r.toLowerCase()}` : ''}` : r;
+  let how;
+  if (ci.v >= 2) {
+    const rows = Object.entries(ci.rows || {}).filter(([, v]) => v !== 'fine').map(([id, v]) => {
+      const why = v === 'dnf' && ci.reasons?.[id] ? ` (${Adapt.REASONS[ci.reasons[id]].toLowerCase()})` : '';
+      return `${exName(id)} ${Adapt.ROWS[v].toLowerCase()}${why}`;
+    });
+    how = [Adapt.OVERALL[ci.overall], ...rows].filter(Boolean).join(' · ');
+  } else {
+    const r = ci.rating ? Adapt.RATINGS[ci.rating] : '';
+    how = ci.finishedAll === false ? `Not all${r ? `, rest ${r.toLowerCase()}` : ''}` : r;
+  }
   const knees = ci.knees != null ? `Knees ${Adapt.KNEES[ci.knees].toLowerCase()}` : '';
   return [how, knees].filter(Boolean).join(' · ');
 }
@@ -1215,11 +1225,11 @@ async function renderMe() {
       </div>
       <button class="row btn-row" data-action="practice">${ICONS.play}<span>Start a practice run</span></button>
     </div>
-    <div class="section-foot">A strong week: 80%+ of workouts done and an average rating of Just right or easier. Practice runs never count or save anything.</div>
+    <div class="section-foot">A strong week: 80%+ of workouts done and no more than one Wiped out. Practice runs never count or save anything.</div>
 
     <div class="section-label">Current levels</div>
     <div class="group">${levels}</div>
-    <div class="section-foot">Easy adds a rep, Too easy adds two. Past the top of the range, the next exercise up starts at the bottom.</div>
+    <div class="section-foot">Easy adds a rep. Past the top of the range, the next exercise up starts at the bottom.</div>
 
     <div class="section-label">Data</div>
     <div class="group">
@@ -1599,7 +1609,7 @@ async function onClose() {
     const log = anyDone ? practiceLog('partial') : null;
     closePlayer();
     await showTab('today');
-    if (log && countsAsWorkout(log)) openCheckIn(log, { partial: true });
+    if (log && countsAsWorkout(log)) openCheckIn(log);
     else toast('Practice: nothing saved');
     return;
   }
@@ -1607,7 +1617,7 @@ async function onClose() {
   await DB.delete('settings', 'session');
   closePlayer();
   await showTab('today');
-  if (log && countsAsWorkout(log)) openCheckIn(log, { partial: true });
+  if (log && countsAsWorkout(log)) openCheckIn(log);
 }
 
 function saveSession() {
@@ -1756,27 +1766,17 @@ function hideCompletion() {
 /* ==========================================================================
    Check-in: one question per screen, under 30 seconds
    ========================================================================== */
-const CI = { log: null, step: null, trail: [], partial: false, finishedAll: null, rating: null, reasons: {}, knees: null, preview: null };
+const CI = { log: null, step: null, trail: [], rows: {}, reasons: {}, overall: null, knees: null, preview: null };
 
 function ciPath() {
-  const path = CI.partial ? [] : ['finished'];
-  if (CI.finishedAll === false && Adapt.unfinishedEntries(CI.log).length) {
-    path.push('reasons');
-    if (ciFinishedCount()) path.push('rest');
-  } else {
-    path.push('rating');
-  }
-  path.push('knees');
+  const path = ['rows', 'overall', 'knees'];
   if (CI.log.practice) path.push('preview');
   return path;
 }
 
-function ciFinishedCount() {
-  return Adapt.ladderEntries(CI.log).length - Adapt.unfinishedEntries(CI.log).length;
-}
-
-function openCheckIn(log, { partial = false } = {}) {
-  Object.assign(CI, { log, trail: [], partial, finishedAll: partial ? false : null, rating: null, reasons: {}, knees: null });
+// An ended-early workout uses the same screens, its unstarted rows starting on Didn't finish.
+function openCheckIn(log) {
+  Object.assign(CI, { log, trail: [], rows: Adapt.defaultRows(log), reasons: {}, overall: null, knees: null });
   hideCompletion();
   const el = $('#checkin');
   el.hidden = false;
@@ -1793,11 +1793,26 @@ function ciGo(step, remember = true) {
   renderCheckIn();
 }
 
-const RATE_CLASS = ['', 'easy', 'easy', 'right', 'hard', 'brutal'];
-
-function ratingButtons() {
-  return `<div class="ci-list">${[1, 2, 3, 4, 5].map(i => `
-    <button class="ci-rate ${RATE_CLASS[i]}" data-ci-rating="${i}"><span class="ci-rate-num num">${i}</span><span>${Adapt.RATINGS[i]}</span></button>`).join('')}</div>`;
+// One exercise: Easy · Fine · Hard · Didn't finish, and the reasons once Didn't finish is picked.
+function ciRowHtml(e) {
+  const id = e.exerciseId;
+  const v = CI.rows[id];
+  const sets = e.setsDone < e.setsPlanned ? `${e.setsDone} of ${e.setsPlanned} sets` : `${e.setsPlanned} sets`;
+  return `
+    <div class="ci-ex" data-row="${esc(id)}">
+      <div class="ci-ex-name">${esc(exName(id))}</div>
+      <div class="ci-ex-sub num">${e.block === 'finisher' ? 'Finisher · ' : ''}${sets}</div>
+      <div class="ci-chips four">${Object.entries(Adapt.ROWS).map(([k, label]) => `
+        <button class="ci-chip row-${k} ${v === k ? 'on' : ''}" data-ci-row="${k}" data-ex="${esc(id)}">${label}</button>`).join('')}
+      </div>
+      ${v === 'dnf' ? `
+      <div class="ci-why">
+        <div class="ci-why-label">Why? <span class="muted">Optional</span></div>
+        <div class="ci-chips">${Object.entries(Adapt.REASONS).map(([k, label]) => `
+          <button class="ci-chip ${CI.reasons[id] === k ? 'on' : ''}" data-ci-reason="${k}" data-ex="${esc(id)}">${label}</button>`).join('')}
+        </div>
+      </div>` : ''}
+    </div>`;
 }
 
 function renderCheckIn() {
@@ -1810,44 +1825,37 @@ function renderCheckIn() {
 
   const q = (title, sub = '') => `<h1 class="ci-q">${esc(title)}</h1>${sub ? `<p class="ci-sub">${esc(sub)}</p>` : ''}`;
   let html = '';
-  if (CI.step === 'finished') {
-    const unfinished = Adapt.unfinishedEntries(CI.log);
-    const skipped = unfinished.reduce((n, e) => n + e.setsPlanned - e.setsDone, 0);
-    html = q('Did you finish everything?', skipped ? `${skipped} set${skipped === 1 ? '' : 's'} skipped` : '') + `
-      <div class="ci-list">
-        <button class="ci-choice ${skipped ? '' : 'suggest'}" data-ci-finished="yes">Yes</button>
-        <button class="ci-choice ${skipped ? 'suggest' : ''}" data-ci-finished="no">Not all</button>
-      </div>`;
-  } else if (CI.step === 'rating') {
-    html = q('How hard was it?') + ratingButtons();
-  } else if (CI.step === 'reasons') {
-    html = q('Which ones, and why?', 'Pick a reason for each one you can. Skip any you like.') +
-      `<div class="ci-list">${Adapt.unfinishedEntries(CI.log).map(e => `
-        <div class="ci-ex">
-          <div class="ci-ex-name">${esc(exName(e.exerciseId))}</div>
-          <div class="ci-ex-sub num">${e.setsDone} of ${e.setsPlanned} sets</div>
-          <div class="ci-chips">${Object.entries(Adapt.REASONS).map(([k, label]) => `
-            <button class="ci-chip ${CI.reasons[e.exerciseId] === k ? 'on' : ''}" data-ci-reason="${k}" data-ex="${esc(e.exerciseId)}">${label}</button>`).join('')}
-          </div>
-        </div>`).join('')}</div>
+  if (CI.step === 'rows') {
+    html = q('How did each one feel?', 'Everything starts on Fine. Tap any that weren’t.') +
+      `<div class="ci-list">${Adapt.rowEntries(CI.log).map(ciRowHtml).join('')}</div>
       <button class="btn btn-primary btn-xl ci-next" data-ci-next>Continue</button>`;
-  } else if (CI.step === 'rest') {
-    const n = ciFinishedCount();
-    html = q('How was the rest?', `The ${n} exercise${n === 1 ? '' : 's'} you finished`) + ratingButtons();
+  } else if (CI.step === 'overall') {
+    html = q('Overall?') + `
+      <div class="ci-list">
+        <button class="ci-choice overall-good" data-ci-overall="good">Good</button>
+        <button class="ci-choice overall-wiped" data-ci-overall="wiped">Wiped out</button>
+      </div>`;
+  } else if (CI.step === 'knees') {
+    html = q('Knees today?') + `<div class="ci-list">${Adapt.KNEES.map((k, i) => `
+      <button class="ci-choice knee-${i}" data-ci-knees="${i}">${k}</button>`).join('')}</div>`;
   } else if (CI.step === 'preview') {
     const lines = CI.preview.map(changeText).filter(Boolean);
     html = q('What would change', 'Practice only. Nothing was saved.') + `<div class="ci-list">${
       lines.length ? lines.map(l => `<div class="ci-preview">${esc(l)}</div>`).join('')
         : '<div class="ci-preview muted">No changes. Everything would stay where it is.</div>'}</div>
       <button class="btn btn-primary btn-xl ci-next" data-ci-done>Done</button>`;
-  } else if (CI.step === 'knees') {
-    html = q('Knees today?') + `<div class="ci-list">${Adapt.KNEES.map((k, i) => `
-      <button class="ci-choice knee-${i}" data-ci-knees="${i}">${k}</button>`).join('')}</div>`;
   }
   const body = $('#ci-body');
   body.innerHTML = html;
   body.classList.remove('step-in'); void body.offsetWidth; body.classList.add('step-in');
   body.scrollTop = 0;
+}
+
+// Redraw one row in place, so tapping chips doesn't replay the screen animation.
+function ciRedrawRow(id) {
+  const e = Adapt.rowEntries(CI.log).find(x => x.exerciseId === id);
+  const el = [...document.querySelectorAll('#ci-body [data-row]')].find(x => x.dataset.row === id);
+  if (e && el) el.outerHTML = ciRowHtml(e);
 }
 
 function onCheckInClick(e) {
@@ -1859,35 +1867,31 @@ function onCheckInClick(e) {
     showTab('today');
     return toast(CI.log.practice ? 'Practice: nothing saved' : 'You can check in from Today');
   }
-  if (t.dataset.ciFinished) {
-    CI.finishedAll = t.dataset.ciFinished === 'yes';
-    if (CI.finishedAll) CI.reasons = {};
-    return ciGo(ciPath()[ciPath().indexOf('finished') + 1]);
+  if (t.dataset.ciRow) {
+    const id = t.dataset.ex;
+    CI.rows[id] = t.dataset.ciRow;
+    if (CI.rows[id] !== 'dnf') delete CI.reasons[id];
+    return ciRedrawRow(id);
   }
   if (t.dataset.ciReason) {
     const id = t.dataset.ex;
-    CI.reasons[id] = CI.reasons[id] === t.dataset.ciReason ? undefined : t.dataset.ciReason;
-    if (!CI.reasons[id]) delete CI.reasons[id];
-    t.parentElement.querySelectorAll('.ci-chip').forEach(c => c.classList.toggle('on', c === t && !!CI.reasons[id]));
-    return;
+    if (CI.reasons[id] === t.dataset.ciReason) delete CI.reasons[id];
+    else CI.reasons[id] = t.dataset.ciReason;
+    return ciRedrawRow(id);
   }
-  if (t.hasAttribute('data-ci-next')) {
-    if (!ciFinishedCount()) CI.rating = null;
-    return ciGo(ciPath()[ciPath().indexOf('reasons') + 1]);
-  }
-  if (t.dataset.ciRating) { CI.rating = Number(t.dataset.ciRating); return ciGo('knees'); }
+  if (t.hasAttribute('data-ci-next')) return ciGo('overall');
+  if (t.dataset.ciOverall) { CI.overall = t.dataset.ciOverall; return ciGo('knees'); }
   if (t.dataset.ciKnees) { CI.knees = Number(t.dataset.ciKnees); return saveCheckIn(); }
 }
 
 async function saveCheckIn() {
   // Re-read: the stretch may have updated this log since the check-in opened. Practice logs have no id.
   const log = CI.log.practice ? CI.log : ((await DB.get('logs', CI.log.id)) || CI.log);
-  const finishedAll = CI.finishedAll !== false;
   const checkIn = {
-    v: 1,
-    finishedAll,
-    rating: (finishedAll || ciFinishedCount()) ? CI.rating : null,
-    reasons: finishedAll ? {} : { ...CI.reasons },
+    v: 2,
+    rows: { ...CI.rows },
+    reasons: Object.fromEntries(Object.entries(CI.reasons).filter(([id]) => CI.rows[id] === 'dnf')),
+    overall: CI.overall,
     knees: CI.knees,
     at: new Date().toISOString(),
   };
@@ -2066,7 +2070,7 @@ function bindEvents() {
       startStretch(log?.id);
     } else if (act === 'checkin') {
       const log = pendingCheckIn(await logsFor(dateKey()));
-      if (log) openCheckIn(log, { partial: log.status === 'partial' });
+      if (log) openCheckIn(log);
     } else if (act === 'ramp-accept') {
       const phase = Number(e.target.closest('[data-phase]').dataset.phase);
       S.adapt.phaseSince = dateKey();

@@ -1,27 +1,51 @@
 'use strict';
 
 /* ==========================================================================
-   Phase 2 adaptation rules (SPEC.md → Post-workout check-in)
+   Adaptation rules (SPEC.md → Post-workout check-in)
    Pure functions: no DOM, no storage. app.js passes data in and saves what comes back.
    A log with checkIn: null (every Phase 1 log, or a skipped check-in) is "no rating":
    it never moves anything and is skipped by every "in a row" rule.
    ========================================================================== */
 const Adapt = (() => {
-  const RATINGS = ['', 'Too easy', 'Easy', 'Just right', 'Hard', 'Brutal'];
+  // Old (v1) check-ins rated the whole workout 1–5. Kept so History can still show them.
+  const RATINGS = ['', 'Too easy', 'Easy', 'Just right', 'Hard', 'Wiped out'];
+  // v2 check-ins: one chip per circuit and finisher exercise, then the overall feel.
+  const ROWS = { easy: 'Easy', fine: 'Fine', hard: 'Hard', dnf: "Didn't finish" };
+  const OVERALL = { good: 'Good', wiped: 'Wiped out' };
   const KNEES = ['Fine', 'Achy', 'Sore', 'Painful'];
   const REASONS = { tooHard: 'Too hard', pain: 'Pain', noTime: 'No time' };
 
   const SECONDS_STEP = 5;      // one "rep" of progress on a timed hold
-  const COND_POINTS_MAX = 2;   // conditioning has no rep range: Easy/Too easy earn points, past 2 is the next rung
+  const COND_POINTS_MAX = 2;   // conditioning has no rep range: Easy earns a point, past 2 is the next rung
   const PAIN_WINDOW_DAYS = 28; // a 2nd pain flag on the same exercise within this window hides it
   const HIDE_DAYS = 14;
   const LADDER_BLOCKS = ['circuit', 'finisher', 'armcare'];
+  const RATED_BLOCKS = ['circuit', 'finisher']; // arm care isn't rated; it moves on its own weekly schedule
 
   const pad2 = n => String(n).padStart(2, '0');
   function addDaysKey(key, n) {
     const [y, m, d] = key.split('-').map(Number);
     const x = new Date(y, m - 1, d + n);
     return `${x.getFullYear()}-${pad2(x.getMonth() + 1)}-${pad2(x.getDate())}`;
+  }
+  function weekStartKey(key) {
+    const [y, m, d] = key.split('-').map(Number);
+    return addDaysKey(key, -new Date(y, m - 1, d).getDay());
+  }
+
+  /*
+   * What a check-in means for the "in a row" rules and the ramp, for old and new check-ins alike.
+   *   v1: Brutal (5) → wiped, Hard (4) → hard; any other rating is rated with no special effect;
+   *       a null rating (nothing finished) or a null check-in is "no rating".
+   *   v2: always rated; hard = any row Hard; wiped = Overall was Wiped out.
+   */
+  function flags(ci) {
+    if (!ci) return { rated: false, hard: false, wiped: false };
+    if (ci.v >= 2) {
+      return { rated: true, hard: Object.values(ci.rows || {}).includes('hard'), wiped: ci.overall === 'wiped' };
+    }
+    const r = ci.rating;
+    return { rated: !!r, hard: r === 4, wiped: r === 5 };
   }
 
   // What "one step of progress" means for the exercise actually done.
@@ -42,7 +66,6 @@ const Adapt = (() => {
     if (ladder.range) prog.repTarget = pick(ladder.range);
     if (ladder.secondsRange) prog.secondsTarget = pick(ladder.secondsRange);
     if (ladder.id === 'conditioning') prog.points = 0;
-    prog.recentRatings = [];
   }
 
   // Next usable rung above (dir 1) or below (dir -1) the current one, or -1.
@@ -92,13 +115,21 @@ const Adapt = (() => {
     });
   }
 
-  function unfinishedEntries(log) {
-    return ladderEntries(log).filter(e => e.setsDone < e.setsPlanned);
+  // The rows the check-in asks about: one per circuit and finisher ladder.
+  function rowEntries(log) {
+    return ladderEntries(log).filter(e => RATED_BLOCKS.includes(e.block));
+  }
+
+  // Every row starts on Fine; one with skipped or unstarted sets starts on Didn't finish.
+  function defaultRows(log) {
+    const rows = {};
+    for (const e of rowEntries(log)) rows[e.exerciseId] = e.setsDone < e.setsPlanned ? 'dnf' : 'fine';
+    return rows;
   }
 
   /*
    * input: {
-   *   log, checkIn,                 // checkIn: { finishedAll, rating, reasons, knees }
+   *   log, checkIn,                 // checkIn: { v: 2, rows, reasons, overall, knees }
    *   earlier: [log],               // logs checked in before this one, oldest first (null check-ins already removed)
    *   progression: { ladderId: rec }, adapt: {...},   // copies; this function edits them
    *   ladders, exById, usable(ex),
@@ -114,13 +145,14 @@ const Adapt = (() => {
     const today = log.date;
     const push = (c, ladderId) => { if (c) { applied.push(c); changed.add(ladderId || c.ladderId); } };
 
-    const entries = ladderEntries(log).filter(e => progression[e.ladderId] && ladders[e.ladderId]);
-    const reasons = checkIn.finishedAll ? {} : (checkIn.reasons || {});
-    const unfinishedIds = new Set(checkIn.finishedAll ? [] : unfinishedEntries(log).map(e => e.exerciseId));
+    const rows = checkIn.rows || {};
+    const reasons = checkIn.reasons || {};
+    const now = flags(checkIn);
+    const entries = rowEntries(log).filter(e => progression[e.ladderId] && ladders[e.ladderId]);
 
-    // 1. Reasons for unfinished exercises
+    // 1. Didn't finish: the reason picked on that row (none picked = no change)
     for (const e of entries) {
-      const reason = reasons[e.exerciseId];
+      const reason = rows[e.exerciseId] === 'dnf' ? reasons[e.exerciseId] : null;
       if (!reason) continue;
       const prog = progression[e.ladderId];
       const ladder = ladders[e.ladderId];
@@ -129,12 +161,12 @@ const Adapt = (() => {
       } else if (reason === 'pain') {
         prog.pain = prog.pain || {};
         const since = addDaysKey(today, -PAIN_WINDOW_DAYS);
-        const flags = (prog.pain[e.exerciseId] || []).filter(d => d >= since);
-        flags.push(today);
-        prog.pain[e.exerciseId] = flags;
+        const painDates = (prog.pain[e.exerciseId] || []).filter(d => d >= since);
+        painDates.push(today);
+        prog.pain[e.exerciseId] = painDates;
         prog.painFlags = (prog.painFlags || 0) + 1;
         changed.add(e.ladderId);
-        if (flags.length >= 2) {
+        if (painDates.length >= 2) {
           prog.hidden = prog.hidden || {};
           prog.hidden[e.exerciseId] = addDaysKey(today, HIDE_DAYS);
           prog.pain[e.exerciseId] = [];
@@ -143,7 +175,7 @@ const Adapt = (() => {
         if (ladder.lowerBody && ladder.id !== 'kneeSupport') {
           adapt.kneeSwap = [...new Set([...(adapt.kneeSwap || []), ladder.id])];
           push({ ladderId: ladder.id, exerciseId: e.exerciseId, change: 'swapKnee' });
-        } else if (flags.length < 2) {
+        } else if (painDates.length < 2) {
           push(moveRung(prog, ladder, -1, ctx), e.ladderId); // safer variant
         }
       } else if (reason === 'noTime') {
@@ -152,56 +184,53 @@ const Adapt = (() => {
       }
     }
 
-    // 2. The difficulty rating, for every exercise that was finished
-    const r = checkIn.rating;
-    if (r) {
-      const rated = entries.filter(e => !unfinishedIds.has(e.exerciseId) && !reasons[e.exerciseId]);
-      const rungMoved = new Set(applied.filter(c => c.change === 'rungUp' || c.change === 'rungDown').map(c => c.ladderId));
-      for (const e of rated) {
-        const prog = progression[e.ladderId];
-        const ladder = ladders[e.ladderId];
-        const ex = exById[e.exerciseId];
-        if (!ex || rungMoved.has(e.ladderId)) continue;
-        prog.recentRatings = [...(prog.recentRatings || []), { date: today, rating: r, exerciseId: e.exerciseId }].slice(-5);
-        changed.add(e.ladderId);
-        if (r === 1) {
-          const [a, b] = prog.recentRatings.slice(-2);
-          const twice = a && b && a.rating === 1 && b.rating === 1 && a.exerciseId === b.exerciseId && a !== b;
-          push((twice && moveRung(prog, ladder, 1, ctx)) || addSteps(prog, ladder, ex, 2, ctx), e.ladderId);
-        } else if (r === 2) {
-          push(addSteps(prog, ladder, ex, 1, ctx), e.ladderId);
-        } else if (r === 5) {
-          push(addSteps(prog, ladder, ex, -2, ctx), e.ladderId);
-        }
-      }
-      if (r === 3) {
-        // Hold, and nudge the exercise that sits lowest in its range by one step.
+    // 2. The finished rows. Wiped out overrides them: −2 on each.
+    const rungMoved = new Set(applied.filter(c => c.change === 'rungUp' || c.change === 'rungDown').map(c => c.ladderId));
+    const rated = entries.filter(e => rows[e.exerciseId] && rows[e.exerciseId] !== 'dnf'
+      && exById[e.exerciseId] && !rungMoved.has(e.ladderId));
+    const step = (e, n) => push(addSteps(progression[e.ladderId], ladders[e.ladderId], exById[e.exerciseId], n, ctx), e.ladderId);
+    if (now.wiped) {
+      rated.forEach(e => step(e, -2));
+    } else {
+      rated.filter(e => rows[e.exerciseId] === 'easy').forEach(e => step(e, 1));
+      // All Fine: hold, and nudge the exercise that sits lowest in its range by one step.
+      if (entries.length && entries.every(e => rows[e.exerciseId] === 'fine')) {
         let best = null;
         for (const e of rated) {
           const ladder = ladders[e.ladderId];
-          const ex = exById[e.exerciseId];
-          if (!ex || ladder.id === 'conditioning' || rungMoved.has(e.ladderId)) continue;
-          const t = track(ladder, ex);
-          const prog = progression[e.ladderId];
-          const cur = prog[t.field] ?? t.min;
-          if (ladder.id === 'armCare' && cur >= t.max) continue;
+          if (ladder.id === 'conditioning') continue;
+          const t = track(ladder, exById[e.exerciseId]);
+          const cur = progression[e.ladderId][t.field] ?? t.min;
           const pos = (cur - t.min) / Math.max(1, t.max - t.min);
-          if (!best || pos < best.pos) best = { e, ladder, ex, pos };
+          if (!best || pos < best.pos) best = { e, pos };
         }
-        if (best) push(addSteps(progression[best.e.ladderId], best.ladder, best.ex, 1, ctx), best.e.ladderId);
+        if (best) step(best.e, 1);
       }
     }
 
-    // 3. Workout-level rules, looking back past unrated logs
-    const prevRated = [...earlier].reverse().find(l => l.checkIn?.rating);
-    const prevSameType = [...earlier].reverse().find(l => l.checkIn?.rating && l.dayType === log.dayType);
-    const prevKnees = [...earlier].reverse().find(l => l.checkIn && l.checkIn.knees != null);
+    // 3. Arm care: +1 at the first check-in of each week where every arm care set was done.
+    const arm = (log.exercises || []).filter(e => e.block === 'armcare');
+    const armEntry = ladderEntries(log).find(e => e.block === 'armcare');
+    const armProg = progression.armCare;
+    const week = weekStartKey(today);
+    if (armEntry && armProg && ladders.armCare && exById[armEntry.exerciseId] && !now.wiped
+        && arm.every(e => e.setsDone >= e.setsPlanned) && armProg.armCareWeek !== week) {
+      armProg.armCareWeek = week;
+      changed.add('armCare');
+      push(addSteps(armProg, ladders.armCare, exById[armEntry.exerciseId], 1, ctx), 'armCare');
+    }
 
-    if (r === 5) {
+    // 4. Workout-level rules, looking back past unrated logs
+    const back = [...earlier].reverse();
+    const prevRated = back.find(l => flags(l.checkIn).rated);
+    const prevSameType = back.find(l => flags(l.checkIn).rated && l.dayType === log.dayType);
+    const prevKnees = back.find(l => l.checkIn && l.checkIn.knees != null);
+
+    if (now.wiped) {
       const restDay = addDaysKey(today, 1);
       adapt.restDates = [...new Set([...(adapt.restDates || []), restDay])];
       push({ change: 'rest', to: restDay }, '_');
-      if (prevSameType?.checkIn.rating === 5) {
+      if (prevSameType && flags(prevSameType.checkIn).wiped) {
         for (const lid of input.dayTypeLadders || []) {
           if (!progression[lid] || !ladders[lid]) continue;
           if (applied.some(c => c.ladderId === lid && c.change === 'rungDown')) continue;
@@ -209,7 +238,8 @@ const Adapt = (() => {
         }
       }
     }
-    if (r >= 4 && prevRated?.checkIn.rating >= 4) {
+    const tough = f => f.hard || f.wiped;
+    if (tough(now) && prevRated && tough(flags(prevRated.checkIn))) {
       adapt.lightNext = true;
       push({ change: 'light' }, '_');
     }
@@ -223,18 +253,19 @@ const Adapt = (() => {
   }
 
   /*
-   * Ramp from 3 to 5 days. weeks: [{ planned, done, ratings: [1-5] }], oldest first,
-   * only weeks that started on or after the current phase began.
+   * Ramp from 3 to 5 days. weeks: [{ planned, done, checks: [flags] }], oldest first,
+   * only weeks that started on or after the current phase began. checks: rated check-ins only.
+   *   strong: 80%+ done, at least one rated check-in, no more than one Wiped out
+   *   rough:  under 60% done, or 2+ Wiped out
    */
+  const wipedCount = w => w.checks.filter(f => f.wiped).length;
   function weekQualifies(w) {
-    if (!w.planned || !w.ratings.length) return false; // unrated weeks never count
-    const avg = w.ratings.reduce((a, b) => a + b, 0) / w.ratings.length;
-    return Math.min(w.done, w.planned) / w.planned >= 0.8 && avg <= 3;
+    if (!w.planned || !w.checks.length) return false; // unrated weeks never count
+    return Math.min(w.done, w.planned) / w.planned >= 0.8 && wipedCount(w) <= 1;
   }
   function weekRough(w) {
     if (!w.planned) return false;
-    const avg = w.ratings.length ? w.ratings.reduce((a, b) => a + b, 0) / w.ratings.length : 0;
-    return Math.min(w.done, w.planned) / w.planned < 0.6 || avg >= 4;
+    return Math.min(w.done, w.planned) / w.planned < 0.6 || wipedCount(w) >= 2;
   }
   function trailing(weeks, test) {
     let n = 0;
@@ -250,7 +281,7 @@ const Adapt = (() => {
     return { earned: Math.min(earned, 2), rough: Math.min(rough, 2), offer };
   }
 
-  return { RATINGS, KNEES, REASONS, applyCheckIn, rampStatus, ladderEntries, unfinishedEntries, addDaysKey, track };
+  return { RATINGS, ROWS, OVERALL, KNEES, REASONS, flags, applyCheckIn, rampStatus, ladderEntries, rowEntries, defaultRows, addDaysKey, track };
 })();
 
 if (typeof module !== 'undefined') module.exports = Adapt;
