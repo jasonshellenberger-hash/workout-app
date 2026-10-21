@@ -1,6 +1,6 @@
 /* Storage wrapper: IndexedDB first, localStorage fallback. Same small async API either way.
  *   DB.get(store, key)  DB.getAll(store)  DB.put(store, value)  DB.delete(store, key)
- *   DB.exportAll()  DB.backend  ('indexeddb' | 'localstorage')
+ *   DB.exportAll()  DB.checkBackup(data)  DB.importAll(data)  DB.backend  ('indexeddb' | 'localstorage')
  */
 const DB = (() => {
   const NAME = 'workout-app';
@@ -51,6 +51,19 @@ const DB = (() => {
       getAll: (s) => tx(s, 'readonly', os => os.getAll()),
       put: (s, v) => tx(s, 'readwrite', os => os.put(v)),
       delete: (s, k) => tx(s, 'readwrite', os => os.delete(k)),
+      // Every store in one transaction: if any write fails, nothing changes.
+      replaceAll: (stores) => new Promise((resolve, reject) => {
+        const names = Object.keys(STORES);
+        const t = db.transaction(names, 'readwrite');
+        for (const name of names) {
+          const os = t.objectStore(name);
+          os.clear();
+          for (const v of stores[name] || []) os.put(v);
+        }
+        t.oncomplete = () => resolve();
+        t.onerror = () => reject(t.error);
+        t.onabort = () => reject(t.error);
+      }),
     };
   }
 
@@ -77,6 +90,19 @@ const DB = (() => {
         return v[opts.keyPath];
       },
       async delete(s, k) { const data = load(s); delete data[k]; save(s, data); },
+      async replaceAll(stores) {
+        for (const [name, opts] of Object.entries(STORES)) {
+          const data = {};
+          let max = 0;
+          for (const v of stores[name] || []) {
+            const k = v[opts.keyPath];
+            data[k] = v;
+            if (typeof k === 'number') max = Math.max(max, k);
+          }
+          save(name, data);
+          if (opts.autoIncrement) localStorage.setItem(keyOf(name) + ':seq', String(max));
+        }
+      },
     };
   }
 
@@ -107,6 +133,23 @@ const DB = (() => {
       const out = { app: NAME, schemaVersion: VERSION, exportedAt: new Date().toISOString(), backend: impl.backend, stores: {} };
       for (const s of Object.keys(STORES)) out.stores[s] = await impl.getAll(s);
       return out;
+    },
+    // null if data is a backup this version can read, otherwise a short reason to show.
+    checkBackup(data) {
+      if (!data || data.app !== NAME || !data.stores || typeof data.stores !== 'object') return "That file isn't a workout backup";
+      if ((data.schemaVersion || 0) > VERSION) return 'That backup is from a newer version of the app. Update first.';
+      for (const [s, rows] of Object.entries(data.stores)) {
+        if (!STORES[s] || !Array.isArray(rows)) return "That backup has data this app doesn't know";
+        if (rows.some(v => !v || typeof v !== 'object' || v[STORES[s].keyPath] == null)) return 'That backup is damaged';
+      }
+      return null;
+    },
+    // Replaces every store with the backup's records, keeping their ids. Older backups may lack a store.
+    async importAll(data) {
+      await init();
+      const problem = this.checkBackup(data);
+      if (problem) throw new Error(problem);
+      await impl.replaceAll(data.stores);
     },
   };
 })();

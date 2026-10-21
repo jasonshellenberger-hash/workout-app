@@ -2,7 +2,7 @@
 
 A personal iPhone workout app (PWA): quiet 15–22 minute home workouts, a guided player with timers, and a local log. Plain HTML, CSS, and JavaScript. No framework and no build step. All data stays on the phone.
 
-**Phase 3 (this version):** everything in Phases 1–2 (plan generator, workout player with timers, logging, check-in, per-exercise progression, the 3 → 5 day ramp, data export) plus the weekly weigh-in with a 4-week average chart, a history calendar, and the "never miss twice" streak. See `SPEC.md` (kept local, not in the repo) for later phases.
+**Phase 4 (this version):** everything in Phases 1–3 (plan generator, workout player with timers, logging, per-exercise check-in and progression, the 3 → 5 day ramp, weekly weigh-in and chart, history calendar, "never miss twice" streak) plus a 10-minute short-on-time version, a morning soreness check, and backup and import with a weekly Sunday reminder. See `SPEC.md` (kept local, not in the repo) for later phases.
 
 ## Files
 
@@ -98,7 +98,7 @@ Only `exercises.json` changed? Still bump `CACHE_VERSION`.
 - **No vibration:** iPhone web apps can't vibrate. That's why the screen flashes.
 - **Screen stays on** during a workout (Screen Wake Lock). If iOS refuses the request, the app carries on without it.
 - **If the app gets closed mid-workout,** reopen it. Today shows **Resume workout** and picks up at the same step.
-- **Your data lives only on this phone,** in the app's storage. Deleting the home-screen app deletes its data. Use **Me → Export data** to save a JSON copy to Files. Full backup and restore arrive in Phase 4.
+- **Your data lives only on this phone,** in the app's storage. Deleting the home-screen app deletes its data. Use **Me → Back up now** (or the Sunday reminder on Today) to save a dated JSON file to iCloud Drive or Files. **Me → Import data** restores one, replacing everything on the phone.
 
 ## Editing exercises
 

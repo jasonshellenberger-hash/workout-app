@@ -154,6 +154,24 @@ This replaces the Phase 2 check-in questions and rating rules above. The pain, "
 - **Ramp:** a strong week is 80%+ done with at least one rated check-in and no more than one Wiped out. A rough week is under 60% done or 2+ Wiped out.
 - **Old check-ins** (`v: 1`, rated 1–5) stay as saved. `Adapt.flags()` reads both kinds for every in-a-row rule and the ramp: Brutal counts as Wiped out, Hard counts as Hard, other ratings have no special effect, and a null rating is unrated. History shows old ratings with Brutal renamed Wiped out.
 
+## Phase 4: polish (v4.0.0, cache v10)
+
+- **Short on time.** Before you start, Today offers "Short on time? Do a 10-minute version".
+  - The short version has 2 warm-up moves, the circuit at 2 rounds with at most 3 exercises (the push always stays), and 2 arm care drills. It has no finisher or stretch. More circuit exercises drop (never below 2) until it fits in 10 minutes.
+  - "Use the full workout" switches back. It's a real workout: check-in, progression, streak, week, and ramp all work as usual. History marks it "10-min version".
+- **Morning soreness check** (on by default; switch on Me). On a planned workout day, before anything is started, Today asks "Sore this morning?" Fine / A bit sore / Very sore.
+  - Only **Very sore** changes anything. Today becomes "Mobility + arm care": warm-up, arm care, and the stretch, about 12 minutes. The day goes into `adapt.soreDates`, so it's no longer a planned workout day.
+  - One-time changes the original plan used (lighter, shorter, knee swap) go back for the next workout. "Use the normal workout" undoes it, and the question isn't asked again that day.
+  - **Done:** counts for the streak and shows as done on the calendar. It never asks for a check-in, and never counts toward the week, the ramp, or the day-type rotation.
+  - **Skipped:** a rest day. It doesn't break the streak and doesn't add to it.
+- **Backup.** Me → **Back up now** saves `workout-backup-YYYY-MM-DD.json` through the share sheet (Save to Files / iCloud Drive), then sets `settings.lastBackup`.
+  - Me shows "Last backup: <date>", in amber after 14 days or if there's never been one.
+  - On Sundays, Today shows a **Weekly backup** card at the top unless there's been a backup in the last 6 days. It's amber after 14 days, and "Not now" hides it until next Sunday.
+- **Import.** Me → **Import data** picks a backup file and checks it: right app, not from a newer version, known stores, every record has its key.
+  - A confirm sheet shows the backup's date and counts and warns that everything is replaced. Then `DB.importAll` replaces every store in one IndexedDB transaction, keeping record ids, and the app restarts.
+  - The newer of the two "Last backup" dates (the phone's or the backup's) is kept. Older backups without a weigh-in store import fine.
+- **Update banner:** already built in v2.2.0.
+
 ## Known issues / fix next
 
 1. **Phase 3 not yet tested on the iPhone.**

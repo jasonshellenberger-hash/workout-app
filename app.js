@@ -1,12 +1,13 @@
 'use strict';
 
 /* ==========================================================================
-   Workout PWA, Phase 3 (tracking)
+   Workout PWA, Phase 4 (polish)
    Plan generator · workout player · logging · check-in · progression · weigh-ins · calendar · streak
+   · short-on-time · soreness check · backup and import
    The adaptation rules live in adapt.js; streak, calendar, and weight math in track.js.
    ========================================================================== */
 
-const APP_VERSION = '3.1.0';
+const APP_VERSION = '4.0.0';
 
 const DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DAY_LETTER = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
@@ -21,7 +22,7 @@ const ACCENTS = [
 
 const DEFAULT_SETTINGS = {
   key: 'app',
-  schemaVersion: 3,
+  schemaVersion: 4,
   equipment: ['db5', 'db10', 'db20', 'trx', 'jband', 'loopband', 'medball6', 'chair', 'bodyweight'],
   quietMode: true,            // always on; shown locked in Settings
   workoutDays: [1, 3, 5],     // Mon / Wed / Fri
@@ -34,6 +35,9 @@ const DEFAULT_SETTINGS = {
   includeStretch: false,
   weighInPrompt: true,        // ask once each Sunday
   weighInSkipped: null,       // the Sunday it was skipped
+  sorenessPrompt: true,       // "Sore this morning?" on workout days, before you start
+  lastBackup: null,           // date of the last export (Back up now)
+  backupSkipped: null,        // the Sunday "Not now" was tapped on the backup card
   restBetweenRoundsSec: 60,
   transitionSec: 15,
 };
@@ -77,6 +81,7 @@ const DEFAULT_ADAPT = {
   lightLegsNext: false, // knees 2+ twice → −2 reps on leg moves
   kneeSwap: [],         // lower-body ladders to swap for Knee support next time
   restDates: [],        // rest days added after a Wiped out session
+  soreDates: [],        // "Very sore" mornings: mobility + arm care instead, never a miss
   phaseSince: null,     // when the current training phase started; earlier weeks never count toward the ramp
   rampDismissed: null,  // week start of the last "Not yet"
 };
@@ -84,6 +89,8 @@ const DEFAULT_ADAPT = {
 // Session length caps. Rounds drop from 3 to 2 to fit; nothing is ever padded.
 const CAP_STANDARD_SEC = 18 * 60;
 const CAP_FINISHER_SEC = 22 * 60;
+const SHORT_CAP_SEC = 10 * 60;   // Short on time
+const BACKUP_STALE_DAYS = 14;    // the backup prompt and "Last backup" turn amber after this
 const MIN_ROUNDS = 2;
 const MAX_ROUNDS = 3;
 
@@ -97,6 +104,7 @@ const ICONS = {
   play: '<svg viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3"/></svg>',
   pause: '<svg viewBox="0 0 24 24"><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></svg>',
   download: '<svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>',
+  upload: '<svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>',
   lock: '<svg viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
   volume: '<svg viewBox="0 0 24 24"><path d="M11 4.7a.7.7 0 0 0-1.2-.5L6.4 7.6A1.4 1.4 0 0 1 5.4 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.4a1.4 1.4 0 0 1 1 .4l3.4 3.4a.7.7 0 0 0 1.2-.5z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.4 18.4a9 9 0 0 0 0-12.7"/></svg>',
   history: '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>',
@@ -145,17 +153,20 @@ function weekStart(d = new Date()) { const x = new Date(d.getFullYear(), d.getMo
 function fmtLongDate(d) { return d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }); }
 function fmtShortDate(d) { return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }); }
 function fmtMinutes(sec) { return `${Math.max(1, Math.round(sec / 60))} min`; }
+function daysSince(key) { return Math.round((parseKey(dateKey()) - parseKey(key)) / 86400000); }
 function fmtClock(sec) { sec = Math.max(0, Math.ceil(sec)); return sec >= 60 ? `${Math.floor(sec / 60)}:${pad2(sec % 60)}` : String(sec); }
 
 function workoutDays() { return (S.settings.workoutDays || []).filter(d => d !== SATURDAY).sort(); }
 function isWorkoutDay(dow) { return workoutDays().includes(dow); }
 // A rest day added after a Wiped out session.
 function isForcedRest(dKey) { return (S.adapt?.restDates || []).includes(dKey); }
+// A "Very sore" morning: the day turns into mobility + arm care and stops being a planned workout day.
+function isSoreDay(dKey) { return (S.adapt?.soreDates || []).includes(dKey); }
 // Past days use the workout days in effect then, so changing your days never rewrites history.
 function isPlannedDay(dKey) {
   const dow = parseKey(dKey).getDay();
   const days = !S.schedule || dKey >= dateKey() ? workoutDays() : Track.daysOn(S.schedule.periods, dKey);
-  return dow !== SATURDAY && days.includes(dow) && !isForcedRest(dKey);
+  return dow !== SATURDAY && days.includes(dow) && !isForcedRest(dKey) && !isSoreDay(dKey);
 }
 
 function toast(msg) {
@@ -386,6 +397,66 @@ async function generateWorkout(dKey, { scheduled = true, persist = true } = {}) 
   return workout;
 }
 
+/*
+ * Short on time: a 10-minute version of a plan. 2 warm-up moves, the circuit at 2 rounds with at most
+ * 3 exercises (the push always stays), no finisher or stretch, 2 arm care drills. More circuit
+ * exercises drop (never below 2) until it fits. The full plan is kept so you can switch back.
+ */
+function shortVersion(w) {
+  const pick = (kind, n) => { const b = w.blocks.find(x => x.kind === kind); return b && { ...b, items: b.items.slice(0, n) }; };
+  const src = w.blocks.find(b => b.kind === 'circuit');
+  const circuit = src && { ...src, rounds: MIN_ROUNDS, items: [...src.items] };
+  const blocks = [pick('warmup', 2), circuit, pick('armcare', 2)].filter(b => b && b.items.length);
+  const draft = { blocks };
+  const dropOne = () => {
+    let i = -1;
+    circuit.items.forEach((it, j) => { if (it.ladderId !== 'push') i = j; });
+    if (i >= 0) circuit.items.splice(i, 1);
+    return i >= 0;
+  };
+  while (circuit && circuit.items.length > 3 && dropOne());
+  while (circuit && circuit.items.length > 2 && estimateSec(draft, false) > SHORT_CAP_SEC && dropOne());
+  return {
+    ...w, blocks, short: true, hasFinisher: false,
+    full: { blocks: w.blocks, estSec: w.estSec, estStretchSec: w.estStretchSec, hasFinisher: w.hasFinisher, notes: w.notes },
+    estSec: estimateSec(draft, false), estStretchSec: 0,
+    notes: [...(w.notes || []), '10-minute version'],
+  };
+}
+
+function fullVersion(w) {
+  const { full, short, ...rest } = w;
+  return full ? { ...rest, ...full } : rest;
+}
+
+// "Very sore": warm-up, arm care and the stretch, about 10 minutes. No circuit, so it never asks
+// for a check-in, moves the rotation, or counts toward the week or the ramp. Done, it counts for the streak.
+function mobilityVersion(w) {
+  const block = kind => w.blocks.find(b => b.kind === kind);
+  const stretch = block('stretch');
+  const blocks = [block('warmup'), block('armcare'), stretch && { ...stretch, optional: false }].filter(b => b && b.items.length);
+  const m = {
+    id: w.id, date: w.date, dayOfWeek: w.dayOfWeek, dayType: 'mobility', name: 'Mobility + arm care',
+    scheduled: w.scheduled, mobility: true, soreness: 'very', hasFinisher: false, blocks, mods: {},
+    notes: ['Very sore this morning, so today is mobility and arm care'],
+    createdAt: new Date().toISOString(),
+  };
+  m.estSec = estimateSec(m, false);
+  m.estStretchSec = 0;
+  return m;
+}
+
+// Put back the one-time changes a plan used, so the next plan built gets them.
+async function giveBackMods(workout) {
+  const m = workout?.mods;
+  if (!m) return;
+  S.adapt.shortNext ||= !!m.short;
+  S.adapt.lightNext ||= !!m.light;
+  S.adapt.lightLegsNext ||= !!m.lightLegs;
+  S.adapt.kneeSwap = [...new Set([...(S.adapt.kneeSwap || []), ...(m.kneeSwap || [])])];
+  await saveAdapt();
+}
+
 async function getWorkout(dKey) {
   const w = await DB.get('workouts', dKey);
   if (w) return w;
@@ -468,6 +539,7 @@ async function loadAdapt() {
   if (!S.adapt.phaseSince) S.adapt.phaseSince = dateKey();
   const cutoff = dateKey(addDays(new Date(), -60));
   S.adapt.restDates = (S.adapt.restDates || []).filter(d => d >= cutoff);
+  S.adapt.soreDates = (S.adapt.soreDates || []).filter(d => d >= cutoff);
   await saveAdapt();
 }
 
@@ -510,17 +582,16 @@ async function invalidateTodayPlan() {
   const logs = await logsFor(today);
   if (logs.length) return;
   const existing = await DB.get('workouts', today);
-  if (existing?.mods) {
-    // Give back the one-time changes this plan used, so the rebuilt plan gets them too.
-    const m = existing.mods;
-    S.adapt.shortNext ||= !!m.short;
-    S.adapt.lightNext ||= !!m.light;
-    S.adapt.lightLegsNext ||= !!m.lightLegs;
-    S.adapt.kneeSwap = [...new Set([...(S.adapt.kneeSwap || []), ...(m.kneeSwap || [])])];
-    await saveAdapt();
-  }
+  if (existing?.mobility) return; // a Very sore day keeps its mobility session
+  await giveBackMods(existing); // so the rebuilt plan gets them too
   await DB.delete('workouts', today);
-  if (existing && !existing.scheduled) await generateWorkout(today, { scheduled: false });
+  // Rebuild now when the plan carries a choice: an extra workout, the 10-minute version, a soreness answer.
+  if (existing && (!existing.scheduled || existing.short || existing.soreness)) {
+    let w = await generateWorkout(today, { scheduled: existing.scheduled });
+    if (existing.soreness) w.soreness = existing.soreness;
+    if (existing.short) w = shortVersion(w);
+    await DB.put('workouts', w);
+  }
 }
 
 async function loadProgression() {
@@ -574,10 +645,16 @@ function countsAsWorkout(log) {
   return circuitSetsDone(log) > 0;
 }
 
-// What the calendar and streak need, from every log. Only logs with circuit sets count.
+// A Very sore mobility session is a real show-up: it counts for the streak and calendar,
+// but never for the week, the ramp, or the rotation (those use countsAsWorkout).
+function countsForStreak(log) {
+  return countsAsWorkout(log) || (log.kind === 'mobility' && (log.setsDone || 0) > 0);
+}
+
+// What the calendar and streak need, from every log. Only logs with circuit sets (or mobility) count.
 async function historyFacts() {
   const logs = await DB.getAll('logs');
-  const counted = logs.filter(countsAsWorkout);
+  const counted = logs.filter(countsForStreak);
   const done = new Set(counted.filter(l => l.status === 'completed').map(l => l.date));
   const partial = new Set(counted.filter(l => l.status !== 'completed' && !done.has(l.date)).map(l => l.date));
   const first = logs.map(l => l.date).sort()[0] || null;
@@ -766,26 +843,45 @@ async function renderToday() {
     const finisher = workout.blocks.find(b => b.kind === 'finisher');
     const armcare = workout.blocks.find(b => b.kind === 'armcare');
     const resuming = session && session.workoutId === today;
+    const untouched = !resuming && !todaysLogs.length; // nothing started today yet
     const exRows = items => items.map(it => {
       const ex = S.exById[it.exerciseId];
       return `<li><span class="ex-name">${esc(ex.name)}</span><span class="ex-target">${esc(targetText(it))}</span></li>`;
     }).join('');
+    const block = kind => workout.blocks.find(b => b.kind === kind);
+    const askSore = S.settings.sorenessPrompt && untouched && workout.scheduled && isPlannedDay(today)
+      && !workout.mobility && !workout.short && !workout.soreness;
+    const switchLink = !untouched ? ''
+      : workout.mobility ? `<button class="text-btn" data-action="unsore">Feeling OK? Use the normal workout</button>`
+      : workout.short ? `<button class="text-btn" data-action="full">Use the full workout</button>`
+      : `<button class="text-btn" data-action="short">Short on time? Do a 10-minute version</button>`;
+    const moves = workout.blocks.filter(b => !b.optional).reduce((n, b) => n + b.items.length, 0);
     hero = `
       <div class="card hero">
-        <div class="hero-kicker">${workout.scheduled ? "Today's workout" : 'Extra workout'}</div>
+        <div class="hero-kicker">${workout.mobility ? 'Recovery' : workout.scheduled ? "Today's workout" : 'Extra workout'}</div>
         <div class="hero-title">${esc(workout.name)}</div>
         <div class="hero-meta">
           <span class="chip accent">${ICONS.clock}<span class="num">~${fmtMinutes(workout.estSec)}</span></span>
-          <span class="chip">${ICONS.list}<span class="num">${circuit?.items.length || 0} exercises</span></span>
-          <span class="chip">${ICONS.repeat}<span class="num">${circuit?.rounds || 0} rounds</span></span>
+          ${circuit ? `<span class="chip">${ICONS.list}<span class="num">${circuit.items.length} exercises</span></span>
+          <span class="chip">${ICONS.repeat}<span class="num">${circuit.rounds} rounds</span></span>`
+            : `<span class="chip">${ICONS.list}<span class="num">${moves} moves</span></span>`}
           ${finisher ? `<span class="chip">${ICONS.zap}Finisher</span>` : ''}
         </div>
         ${(workout.notes || []).map(n => `<div class="hero-note">${esc(n)}</div>`).join('')}
         ${pending ? `<button class="text-btn" data-action="checkin">Check in on the workout you ended early</button>` : ''}
+        ${askSore ? `
+        <div class="sore-ask">
+          <div class="sore-q">Sore this morning?</div>
+          <div class="ci-chips">${[['fine', 'Fine'], ['sore', 'A bit sore'], ['very', 'Very sore']].map(([v, label]) => `
+            <button class="ci-chip" data-action="sore" data-sore="${v}">${label}</button>`).join('')}
+          </div>
+        </div>` : ''}
+        ${switchLink}
         <ul class="ex-list">
+          ${workout.mobility ? ['warmup', 'armcare', 'stretch'].map(k => block(k) ? `<li class="ex-block">${esc(block(k).label)}</li>${exRows(block(k).items)}` : '').join('') : `
           ${circuit ? `<li class="ex-block">Main circuit</li>${exRows(circuit.items)}` : ''}
           ${finisher ? `<li class="ex-block">Finisher · 30s on / 30s off</li>${exRows(finisher.items)}` : ''}
-          ${armcare ? `<li class="ex-block">Arm care</li>${exRows(armcare.items)}` : ''}
+          ${armcare ? `<li class="ex-block">Arm care</li>${exRows(armcare.items)}` : ''}`}
         </ul>
       </div>`;
     dock = `<button class="btn btn-primary btn-xl" data-action="start">${resuming ? 'Resume workout' : 'Start workout'}</button>`;
@@ -827,8 +923,31 @@ async function renderToday() {
   const updateBanner = Update.waiting
     ? `<button class="update-banner" data-action="update">${ICONS.refresh}<span>Update ready, tap to reload</span></button>`
     : '';
-  $('#view-today').innerHTML = updateBanner + largeTitle('Today', fmtLongDate(now)) + await rampCard() + hero + `<div style="height:12px"></div>` + weekHtml;
+  $('#view-today').innerHTML = updateBanner + largeTitle('Today', fmtLongDate(now)) + await rampCard() + backupCard(today) + hero
+    + `<div style="height:12px"></div>` + weekHtml;
   setDock(dock);
+}
+
+// Sundays: a "Back up now" card, unless there's been a backup in the last 6 days. Amber after 14.
+function backupCard(today) {
+  const lb = S.settings.lastBackup;
+  if (parseKey(today).getDay() !== 0 || S.settings.backupSkipped === today) return '';
+  if (lb && daysSince(lb) < 6) return '';
+  const stale = backupStale();
+  return `
+    <div class="card backup-card ${stale ? 'stale' : ''}">
+      <div class="backup-title">${ICONS.download}<span>Weekly backup</span></div>
+      <p class="muted">${lb ? `Last backup: ${esc(fmtShortDate(parseKey(lb)))}${stale ? ` (${daysSince(lb)} days ago)` : ''}` : 'No backup yet'}. Saves one file to iCloud Drive or Files.</p>
+      <div class="ramp-actions">
+        <button class="btn btn-secondary" data-action="backup-skip">Not now</button>
+        <button class="btn btn-primary" data-action="export">Back up now</button>
+      </div>
+    </div>`;
+}
+
+function backupStale() {
+  const lb = S.settings.lastBackup;
+  return !lb || daysSince(lb) > BACKUP_STALE_DAYS;
 }
 
 function nextWorkoutDay(from) {
@@ -876,7 +995,7 @@ function logRow(l) {
       <div class="row log-row">
         <div class="row-main">
           <div class="row-title">${esc(l.name || DAY_TYPES[l.dayType]?.name || 'Workout')}</div>
-          <div class="row-sub num">${esc(fmtShortDate(parseKey(l.date)))} · ${fmtMinutes(l.durationSec)} · ${l.setsDone}/${l.setsPlanned} sets${l.stretchDone ? ' · stretch' : ''}</div>
+          <div class="row-sub num">${esc(fmtShortDate(parseKey(l.date)))} · ${fmtMinutes(l.durationSec)} · ${l.setsDone}/${l.setsPlanned} sets${l.short ? ' · 10-min version' : ''}${l.stretchDone && l.kind !== 'mobility' ? ' · stretch' : ''}</div>
           ${checkInText(l) ? `<div class="row-sub">${esc(checkInText(l))}</div>` : ''}
           ${levelUpText(l) ? `<div class="row-sub levelup-line">${ICONS.levelUp}${esc(levelUpText(l))}</div>` : ''}
         </div>
@@ -1204,6 +1323,7 @@ async function renderMe() {
         <div class="seg">${['subtle', 'bold'].map(v => `<button class="seg-btn ${st.flashStrength === v ? 'on' : ''}" data-flash-strength="${v}">${v === 'bold' ? 'Bold' : 'Subtle'}</button>`).join('')}</div>
       </div>` : ''}
       ${switchRow('Include stretch', 'includeStretch', { sub: 'Adds the 5-minute stretch to every workout' })}
+      ${switchRow('Morning soreness check', 'sorenessPrompt', { sub: 'Very sore turns the day into mobility + arm care' })}
       <button class="row btn-row" data-action="test-cue">${ICONS.volume}<span>Test sound and flash</span></button>
     </div>
     <div class="section-foot" id="audio-debug">${esc(audioDebugText())}</div>
@@ -1233,9 +1353,11 @@ async function renderMe() {
 
     <div class="section-label">Data</div>
     <div class="group">
-      <button class="row btn-row" data-action="export">${ICONS.download}<span>Export data</span></button>
+      <button class="row btn-row" data-action="export">${ICONS.download}<span>Back up now</span></button>
+      <button class="row btn-row" data-action="import">${ICONS.upload}<span>Import data</span></button>
     </div>
-    <div class="section-foot">Saves everything as one JSON file. Storage: ${esc(DB.backend)} · v${APP_VERSION}</div>
+    <div class="section-foot"><span class="${backupStale() ? 'stale' : ''}">${st.lastBackup ? `Last backup: ${esc(fmtShortDate(parseKey(st.lastBackup)))}` : 'No backup yet'}</span>.
+      Back up saves everything as one dated file. Import replaces all data on this phone. Storage: ${esc(DB.backend)} · v${APP_VERSION}</div>
   `;
   $('#view-me').innerHTML = html;
 }
@@ -1301,13 +1423,13 @@ async function onMeChange(e) {
 
 async function exportData() {
   const data = await DB.exportAll();
-  const name = `workout-data-${dateKey()}.json`;
+  const name = `workout-backup-${dateKey()}.json`;
   const json = JSON.stringify(data, null, 2);
   const file = new File([json], name, { type: 'application/json' });
   const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   // On iPhone a share sheet is the reliable way to save a file ("Save to Files").
   if (isIOS && navigator.canShare && navigator.canShare({ files: [file] })) {
-    try { await navigator.share({ files: [file], title: name }); return; }
+    try { await navigator.share({ files: [file], title: name }); return markBackedUp(); }
     catch (err) { if (err.name === 'AbortError') return; }
   }
   const url = URL.createObjectURL(file);
@@ -1318,7 +1440,52 @@ async function exportData() {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
-  toast('Data exported');
+  toast('Backup saved');
+  markBackedUp();
+}
+
+// Written directly: saveSettings would rebuild today's plan, which a backup has no reason to touch.
+async function markBackedUp() {
+  S.settings.lastBackup = dateKey();
+  await DB.put('settings', S.settings);
+  if (S.tab === 'today') renderToday();
+  else if (S.tab === 'me') renderMe();
+}
+
+// Import: pick a backup file, check it, confirm, then replace everything and restart the app.
+function pickImportFile() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'application/json,.json';
+  input.addEventListener('change', () => { if (input.files[0]) importFile(input.files[0]); });
+  input.click();
+}
+
+async function importFile(file) {
+  let data;
+  try { data = JSON.parse(await file.text()); } catch { return toast("That file isn't a workout backup"); }
+  const problem = DB.checkBackup(data);
+  if (problem) return toast(problem);
+  const when = data.exportedAt ? fmtShortDate(new Date(data.exportedAt)) : 'an unknown date';
+  const workouts = (data.stores.logs || []).filter(l => l.status === 'completed' && countsAsWorkout(l)).length;
+  const weighIns = (data.stores.body || []).length;
+  const choice = await actionSheet({
+    title: `Replace all data with the backup from ${when} (${workouts} workout${workouts === 1 ? '' : 's'}, ${weighIns} weigh-in${weighIns === 1 ? '' : 's'})? Everything on this phone now is replaced. This can't be undone.`,
+    actions: [{ label: 'Replace everything', value: 'replace', destructive: true }],
+  });
+  if (choice !== 'replace') return;
+  const keep = S.settings.lastBackup;
+  try {
+    await DB.importAll(data);
+  } catch (err) {
+    console.error(err);
+    return toast('Import failed. Nothing was changed.');
+  }
+  // Keep the newer "Last backup" date: the backup's own, or this phone's.
+  const st = await DB.get('settings', 'app');
+  if (st && keep && !(st.lastBackup >= keep)) { st.lastBackup = keep; await DB.put('settings', st); }
+  toast('Data imported');
+  setTimeout(() => location.reload(), 700);
 }
 
 /* ==========================================================================
@@ -1691,7 +1858,8 @@ function buildLog(status) {
     dayType: P.workout.dayType,
     name: P.workout.name,
     scheduled: P.workout.scheduled,
-    kind: 'full',
+    kind: P.workout.mobility ? 'mobility' : 'full',
+    short: !!P.workout.short,
     status,
     startedAt: P.startedAt,
     finishedAt: finished.toISOString(),
@@ -1726,6 +1894,7 @@ function showCompletion(log, fromCount, toCount, planned, streakFrom = 0, streak
   $('#c-title').textContent = log.practice ? 'Practice done' : 'Workout done';
   $('#c-sub').textContent = `${log.name} · ${fmtMinutes(log.durationSec)}${log.practice ? ' · not saved' : ''}`;
   $('#c-practice').hidden = !log.practice;
+  $('#c-done').textContent = countsAsWorkout(log) ? 'Check in' : 'Done';
   const count = $('#c-count');
   count.textContent = fromCount;
   count.classList.remove('tick');
@@ -1968,6 +2137,34 @@ function showLevelUp(ups) {
   el.classList.add('play');
 }
 
+/* ---------- Morning soreness: "Very sore" turns today into mobility + arm care ---------- */
+async function setSoreness(level) {
+  const today = dateKey();
+  const w = await DB.get('workouts', today);
+  if (!w) return;
+  if (level === 'very') {
+    await giveBackMods(w); // lighter / shorter / knee swap carry over to the next workout
+    S.adapt.soreDates = [...new Set([...(S.adapt.soreDates || []), today])];
+    await saveAdapt();
+    await DB.put('workouts', mobilityVersion(w));
+  } else {
+    w.soreness = level;
+    await DB.put('workouts', w);
+  }
+  renderToday();
+}
+
+async function undoSoreness() {
+  const today = dateKey();
+  S.adapt.soreDates = (S.adapt.soreDates || []).filter(d => d !== today);
+  await saveAdapt();
+  await DB.delete('workouts', today);
+  const w = await generateWorkout(today);
+  w.soreness = 'undone'; // don't ask again today
+  await DB.put('workouts', w);
+  renderToday();
+}
+
 /* ==========================================================================
    Updates: a new service worker waits until you tap the banner on Today
    ========================================================================== */
@@ -2089,6 +2286,21 @@ function bindEvents() {
       Update.apply();
     } else if (act === 'export') {
       exportData();
+    } else if (act === 'import') {
+      pickImportFile();
+    } else if (act === 'backup-skip') {
+      S.settings.backupSkipped = dateKey();
+      await DB.put('settings', S.settings);
+      renderToday();
+    } else if (act === 'short' || act === 'full') {
+      const w = await DB.get('workouts', dateKey());
+      if (!w) return;
+      await DB.put('workouts', act === 'short' ? shortVersion(w) : fullVersion(w));
+      renderToday();
+    } else if (act === 'sore') {
+      setSoreness(e.target.closest('[data-sore]').dataset.sore);
+    } else if (act === 'unsore') {
+      undoSoreness();
     } else if (act === 'test-cue') {
       Sound.unlock();
       setTimeout(() => cue('go'), 50);
@@ -2121,7 +2333,11 @@ function bindEvents() {
     if (Sound.ctx && Sound.ctx.state !== 'running') Sound.unlock();
   }, { capture: true, passive: true });
 
-  $('#c-done').addEventListener('click', () => openCheckIn(S.lastLog));
+  $('#c-done').addEventListener('click', () => {
+    if (countsAsWorkout(S.lastLog)) return openCheckIn(S.lastLog);
+    hideCompletion();
+    showTab('today');
+  });
   $('#checkin').addEventListener('click', onCheckInClick);
   $('#lu-done').addEventListener('click', () => { $('#levelup').hidden = true; });
   $('#c-stretch').addEventListener('click', e => {

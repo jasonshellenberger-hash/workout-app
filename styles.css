@@ -576,6 +576,19 @@ svg { display: block; }
 .ramp-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 16px; }
 .ramp-actions .btn { min-height: 50px; }
 
+/* Phase 4: soreness check, weekly backup */
+.sore-ask { margin-top: 16px; padding: 14px; border-radius: 14px; background: var(--surface-raised); }
+.sore-q { font-weight: 600; }
+.sore-ask .ci-chips { margin-top: 10px; }
+.sore-ask .ci-chip { background: var(--surface); color: var(--text); }
+.backup-title { display: flex; align-items: center; gap: 8px; font-size: 20px; font-weight: 700; }
+.backup-title svg { width: 22px; height: 22px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.backup-card { margin-bottom: 12px; }
+.backup-card p { margin: 6px 0 0; }
+.backup-card.stale { box-shadow: inset 0 0 0 1.5px var(--caution); }
+.backup-card.stale .backup-title, .section-foot .stale { color: var(--caution); }
+.section-foot .stale { font-weight: 600; }
+
 /* History */
 .levelup-line { display: flex; align-items: center; gap: 4px; color: var(--accent); }
 .levelup-line svg { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
