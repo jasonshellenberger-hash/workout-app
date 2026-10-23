@@ -172,6 +172,33 @@ This replaces the Phase 2 check-in questions and rating rules above. The pain, "
   - The newer of the two "Last backup" dates (the phone's or the backup's) is kept. Older backups without a weigh-in store import fine.
 - **Update banner:** already built in v2.2.0.
 
+## Phase 5a: habits (v5.0.0, cache v11)
+
+New records live in the `settings` store (no IndexedDB version bump), so backup and import carry them: `ledger` (skip tax) and `bank` (rewards). Settings are schemaVersion 5. The math is in `habits.js`, which has pure functions like `track.js`.
+
+- **Just show up.** On a planned or extra day, before you start, Today offers "Just show up: 5 minutes" next to "Short on time".
+  - It has 2 warm-up moves, 1 round of the push plus one more circuit move, and 1 arm care drill, trimmed until it fits in 5 minutes. The log gets `kind: 'minimum'`.
+  - It counts for the streak (done or partial) and is never taxed. It gets no check-in and no progression, and doesn't count toward the rotation, the week count, or the ramp (`countsAsWorkout` leaves it out). The week strip shows the day with a green ring instead of a filled dot.
+  - The plan's one-time changes (lighter, shorter, knee swap) go back for the next real workout. "Use the full workout" or "Do the full workout too" (after a 5-minute session) uses them up again.
+- **Skip tax.** Owed is worked out from history, not stored: every planned day from `ledger.since` through yesterday with no show-up costs $5, minus payments.
+  - `since` is the install day, so nothing before Phase 5a is charged. Turning the tax off and back on starts a fresh ledger.
+  - **Paid** records a payment for the full amount. A payment covers every miss before its date.
+  - **Excuse** (Sick or Travel, 2 per calendar month) is available from Today ("Sick or traveling? Excuse today") or from a missed day on the History calendar (within 14 days, not yet paid for).
+  - An excused day stops being a planned day (`isPlannedDay`), so it's never a miss for the streak, the week, the ramp, or the tax. Excusing today removes the plan and gives back its one-time changes. The calendar shows excused days struck through, with Undo.
+- **Wife notice.** It's due when floor(owed / $20) is more than `ledger.noticesSent`. Paid resets the count.
+  - Today shows a red **Notify her** card. With no number set, it shows **Set up** instead.
+  - The button is an `sms:` link with the message filled in (`{amount}` becomes the amount owed). The app can't tell whether the text was sent, so after Messages opens the card asks **Sent it** / **Open again**.
+  - Me → Habits → **Skip tax and text settings** edits the amount, the excuse limit, the threshold, her name, her number, and the message.
+- **Reward bank.** 10 points for a finished workout. 5 for a 5-minute workout, a mobility day, or a partial with circuit sets. Only the best one counts each day, from `bank.since` (install day).
+  - Me → Rewards shows the balance and your rewards. You can add, edit, or delete them (tap the name), and **Cash in** is disabled until you can afford it.
+  - Cash-ins are listed in History under "Rewards cashed in". The completion screen shows "+10 points".
+- **Weekly scorecard.** On Sundays, Today shows it at the top until **Got it**. It covers the week that just ended.
+  - It shows workouts done / planned, the streak, skip tax owed, and points.
+  - It has an 8-week chart of weekly completion % with the average line and dashed upper/lower limits (XmR: average ± 2.66 × the average week-to-week change, kept between 0 and 100). Weeks before your first log and weeks with nothing planned are left out.
+  - It takes over the Sunday backup card: **Back up now** and the Last backup line (amber after 14 days) show on the scorecard unless there's been a backup in the last 6 days.
+  - History shows the latest scorecard under "Last week". Win meal % arrives with 5b.
+- **Wake-up nudge.** README → Wake-up nudge. Shortcuts can't open a home-screen web app, and "Open URLs" opens Safari, which has separate storage. So the alarm automation shows a notification instead.
+
 ## Known issues / fix next
 
 1. **Phase 3 not yet tested on the iPhone.**
@@ -179,10 +206,10 @@ This replaces the Phase 2 check-in questions and rating rules above. The pain, "
 3. **Ending early, then restarting.** After you end a workout early, Today offers "Start workout" again, and finishing that creates a second log for the same day. History will show both. A fix would merge them, or resume from the partial log.
 4. **Workouts left open past midnight.** A workout left unfinished overnight is saved as partial with a duration of 0.
 5. **Session times are estimates,** at about 3 s per rep (more for tempo moves). Adjust after timing a few real sessions.
-6. **Export only, no import.** Restore comes in Phase 4.
-7. **Missed check-ins stay unrated.** A check-in skipped with Later and never done by midnight stays `null`. Starting "Train again" before checking in also leaves the earlier session unrated.
-8. **The "Which ones, and why?" list can be long** after ending early, because it lists every unfinished exercise, including arm care. You can skip any of them.
-9. **Phase 5 will adjust the streak.** The "Just show up" minimum workout will count toward it, and excused skips won't count as misses.
+6. **Missed check-ins stay unrated.** A check-in skipped with Later and never done by midnight stays `null`. Starting "Train again" before checking in also leaves the earlier session unrated.
+7. **The "Which ones, and why?" list can be long** after ending early, because it lists every unfinished exercise, including arm care. You can skip any of them.
+8. **Excuses after paying.** A missed day that's already been paid for can't be excused. Paid has no undo, so excuse sick days before tapping Paid.
+9. **The skip tax counts only after install.** Misses before Phase 5a, or while the tax was off, are never charged.
 
 ## Deploy steps (not done yet)
 

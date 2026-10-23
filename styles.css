@@ -589,6 +589,52 @@ svg { display: block; }
 .backup-card.stale .backup-title, .section-foot .stale { color: var(--caution); }
 .section-foot .stale { font-weight: 600; }
 
+/* Phase 5a: habits */
+.alt-links { display: flex; flex-direction: column; align-items: flex-start; margin-top: 10px; }
+.alt-links .text-btn { margin-top: 2px; }
+.text-btn.muted-link { color: var(--text-muted); font-weight: 500; }
+a.btn { text-decoration: none; }
+.btn:disabled { opacity: .45; }
+.btn-small { min-height: 36px; padding: 0 14px; border-radius: 10px; font-size: 15px; flex: none; }
+.week-day.showed .dot { box-shadow: inset 0 0 0 2.5px var(--win); }
+.week-day.showed.today .dot { box-shadow: inset 0 0 0 2.5px var(--win), 0 0 0 2px var(--accent); }
+.notice-card, .owe-card, .scorecard.on-today { margin-bottom: 12px; }
+.notice-card { box-shadow: inset 0 0 0 1.5px var(--miss); }
+.notice-card .backup-title { color: var(--miss); }
+.notice-card p, .owe-card p { margin: 6px 0 0; }
+.notice-actions { margin-top: 16px; }
+.notice-actions > .btn { width: 100%; }
+.notice-actions .ramp-actions { margin-top: 0; }
+.owe-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.owe-num { font-size: 40px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.05; color: var(--miss); }
+.owe-paid { min-width: 96px; }
+.ramp-actions.one { grid-template-columns: 1fr; }
+.sc-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); gap: 8px; margin-top: 14px; }
+.sc-num { font-size: 26px; font-weight: 700; line-height: 1.1; }
+.sc-num .of { font-size: 16px; font-weight: 500; color: var(--text-muted); }
+.sc-label { font-size: 13px; color: var(--text-muted); margin-top: 2px; }
+.sc-wait { margin: 14px 0 0; }
+.sc-backup { margin: 14px 0 -4px; font-size: 15px; color: var(--text-muted); }
+.sc-backup.stale { color: var(--caution); font-weight: 600; }
+.ch-pct { fill: none; stroke: var(--win); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.ch-mean { stroke: var(--accent); stroke-width: 1.5; }
+.ch-limit { stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 4 4; opacity: .7; }
+.ch-dot.out { fill: var(--caution); }
+.lg-limit { width: 16px; height: 0; border-top: 1.5px dashed var(--text-muted); }
+.cal-day.excused { color: var(--text-muted); text-decoration: line-through; text-decoration-color: rgba(155,161,172,.6); }
+.bank-card .muted { margin-top: 4px; }
+.reward-edit { text-align: left; color: inherit; }
+.fs-field { display: block; margin-top: 12px; }
+.fs-field span { display: block; font-size: 13px; font-weight: 600; color: var(--text-muted); margin: 0 0 6px 2px; }
+.fs-field input, .fs-field textarea {
+  width: 100%; border: 0; outline: 0; border-radius: 12px; padding: 12px 14px;
+  background: var(--bg); color: var(--text); font: 17px/1.3 var(--font); resize: none;
+  -webkit-user-select: text; user-select: text;
+}
+.fs-field input::placeholder { color: rgba(155,161,172,.45); }
+.fsheet-root .wsheet { max-height: calc(100% - var(--safe-top) - 24px); overflow-y: auto; }
+.fs-extra { color: var(--miss); margin-top: 12px; }
+
 /* History */
 .levelup-line { display: flex; align-items: center; gap: 4px; color: var(--accent); }
 .levelup-line svg { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }

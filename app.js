@@ -1,13 +1,15 @@
 'use strict';
 
 /* ==========================================================================
-   Workout PWA, Phase 4 (polish)
+   Workout PWA, Phase 5a (habits)
    Plan generator · workout player · logging · check-in · progression · weigh-ins · calendar · streak
    · short-on-time · soreness check · backup and import
-   The adaptation rules live in adapt.js; streak, calendar, and weight math in track.js.
+   · 5-minute minimum · skip tax · wife notice · reward bank · weekly scorecard
+   The adaptation rules live in adapt.js; streak, calendar, and weight math in track.js;
+   skip tax, points, and scorecard math in habits.js.
    ========================================================================== */
 
-const APP_VERSION = '4.0.0';
+const APP_VERSION = '5.0.0';
 
 const DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DAY_LETTER = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
@@ -22,7 +24,7 @@ const ACCENTS = [
 
 const DEFAULT_SETTINGS = {
   key: 'app',
-  schemaVersion: 4,
+  schemaVersion: 5,
   equipment: ['db5', 'db10', 'db20', 'trx', 'jband', 'loopband', 'medball6', 'chair', 'bodyweight'],
   quietMode: true,            // always on; shown locked in Settings
   workoutDays: [1, 3, 5],     // Mon / Wed / Fri
@@ -40,7 +42,42 @@ const DEFAULT_SETTINGS = {
   backupSkipped: null,        // the Sunday "Not now" was tapped on the backup card
   restBetweenRoundsSec: 60,
   transitionSec: 15,
+  // Phase 5a habits
+  skipTax: true,              // $ per unexcused missed workout, on the Today "You owe" card
+  skipTaxAmount: 5,
+  excuseLimit: 2,             // free excused skips (sick, travel) per calendar month
+  notice: true,               // a pre-filled text when the ledger crosses the threshold
+  noticeName: '',
+  noticePhone: '',
+  noticeThreshold: 20,
+  noticeMessage: "Jason's workout IOU just hit {amount}. Time to collect.",
+  rewardsOn: true,
+  scorecard: true,            // Sunday weekly scorecard on Today
+  scorecardSeen: null,        // the Sunday "Got it" was tapped
 };
+
+// Skip tax state. Owed is worked out from history (Habits.ledger); only payments and excuses are stored.
+const DEFAULT_LEDGER = {
+  key: 'ledger',
+  since: null,          // first day that can be taxed: the day Phase 5a was installed, or the tax turned back on
+  payments: [],         // [{ date, amount }]
+  excused: [],          // [{ date, reason: 'sick' | 'travel' }]: never a miss, never taxed
+  noticesSent: 0,       // notices sent since the last payoff
+  noticeOpen: false,    // Messages was opened; waiting for "Sent it"
+};
+
+// Reward bank. Points are worked out from logs (Habits.bank); rewards and cash-ins are stored.
+const DEFAULT_BANK = {
+  key: 'bank',
+  since: null,          // points count from the day Phase 5a was installed
+  rewards: [],          // [{ id, name, cost }]
+  redemptions: [],      // [{ date, at, rewardId, name, cost }]
+};
+
+const POINTS_FULL = 10;      // a finished workout
+const POINTS_SMALL = 5;      // a 5-minute workout, a mobility day, or a partial with circuit sets
+const MINIMUM_CAP_SEC = 5 * 60;
+const EXCUSE_TEXT = { sick: 'Sick', travel: 'Travel' };
 
 // Starting rung and target per ladder, from SPEC.md → Starting assessment.
 // Phase 2 moves these with the check-in; Phase 1 only reads them.
@@ -115,6 +152,10 @@ const ICONS = {
   levelUp: '<svg viewBox="0 0 24 24"><path d="m17 11-5-5-5 5"/><path d="m17 18-5-5-5 5"/></svg>',
   refresh: '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>',
   arrowDown: '<svg viewBox="0 0 24 24"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg>',
+  gift: '<svg viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7"/><path d="M7.5 8a2.5 2.5 0 0 1 0-5A4.8 8 0 0 1 12 8a4.8 8 0 0 1 4.5-5 2.5 2.5 0 0 1 0 5"/></svg>',
+  message: '<svg viewBox="0 0 24 24"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>',
+  coins: '<svg viewBox="0 0 24 24"><circle cx="8" cy="8" r="6"/><path d="M18.09 10.37A6 6 0 1 1 10.34 18"/><path d="M7 6h1v4"/><path d="m16.71 13.88.7.71-2.82 2.82"/></svg>',
+  chart: '<svg viewBox="0 0 24 24"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="m19 9-5 5-4-4-3 3"/></svg>',
   utensils: '<svg viewBox="0 0 24 24"><path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/></svg>',
 };
 
@@ -126,6 +167,8 @@ const S = {
   settings: null,
   progression: {},   // ladderId → progression record
   adapt: null,       // DEFAULT_ADAPT shape, stored in settings under 'adapt'
+  ledger: null,      // DEFAULT_LEDGER shape, stored in settings under 'ledger'
+  bank: null,        // DEFAULT_BANK shape, stored in settings under 'bank'
   lastLog: null,     // the log the completion screen is showing
   schedule: null,    // { periods: [{ from, days }] }: which workout days were in effect when
   calMonth: null,    // History calendar: { y, m } shown
@@ -162,12 +205,15 @@ function isWorkoutDay(dow) { return workoutDays().includes(dow); }
 function isForcedRest(dKey) { return (S.adapt?.restDates || []).includes(dKey); }
 // A "Very sore" morning: the day turns into mobility + arm care and stops being a planned workout day.
 function isSoreDay(dKey) { return (S.adapt?.soreDates || []).includes(dKey); }
+// An excused skip (sick, travel): not a planned day, so never a miss for the streak, the week, or the tax.
+function excuseFor(dKey) { return (S.ledger?.excused || []).find(x => x.date === dKey) || null; }
 // Past days use the workout days in effect then, so changing your days never rewrites history.
 function isPlannedDay(dKey) {
   const dow = parseKey(dKey).getDay();
   const days = !S.schedule || dKey >= dateKey() ? workoutDays() : Track.daysOn(S.schedule.periods, dKey);
-  return dow !== SATURDAY && days.includes(dow) && !isForcedRest(dKey) && !isSoreDay(dKey);
+  return dow !== SATURDAY && days.includes(dow) && !isForcedRest(dKey) && !isSoreDay(dKey) && !excuseFor(dKey);
 }
+const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
 function toast(msg) {
   const t = $('#toast');
@@ -425,8 +471,53 @@ function shortVersion(w) {
 }
 
 function fullVersion(w) {
-  const { full, short, ...rest } = w;
+  const { full, short, minimum, ...rest } = w;
   return full ? { ...rest, ...full } : rest;
+}
+
+/*
+ * "Just show up": a quiet 5-minute version of a plan. 2 warm-up moves, 1 round of the push plus one more
+ * circuit move, and 1 arm care drill, trimmed until it fits. It counts for the streak, but never asks for a
+ * check-in or changes progression (countsAsWorkout leaves out kind 'minimum').
+ * Pure: the caller gives the plan's one-time changes back (toMinimum), since this isn't the next real workout.
+ */
+function minimumVersion(w) {
+  const pick = (kind, n) => { const b = w.blocks.find(x => x.kind === kind); return b && { ...b, items: b.items.slice(0, n) }; };
+  const src = w.blocks.find(b => b.kind === 'circuit');
+  const push = src?.items.find(it => it.ladderId === 'push');
+  const other = src?.items.find(it => it !== push);
+  const circuit = src && { ...src, rounds: 1, items: [push, other].filter(Boolean) };
+  const warmup = pick('warmup', 2);
+  const blocks = [warmup, circuit, pick('armcare', 1)].filter(b => b && b.items.length);
+  const draft = { blocks };
+  if (warmup && estimateSec(draft, false) > MINIMUM_CAP_SEC) warmup.items = warmup.items.slice(0, 1);
+  if (circuit && circuit.items.length > 1 && estimateSec(draft, false) > MINIMUM_CAP_SEC) circuit.items = circuit.items.slice(0, 1);
+  const { full, short, ...base } = w;
+  return {
+    ...base, blocks: blocks.filter(b => b.items.length), minimum: true, hasFinisher: false, mods: {},
+    full: { ...(full || { blocks: w.blocks, estSec: w.estSec, estStretchSec: w.estStretchSec, hasFinisher: w.hasFinisher, notes: w.notes }), mods: full?.mods || w.mods },
+    estSec: estimateSec(draft, false), estStretchSec: 0,
+    notes: ['Just show up: 5 minutes still counts for the streak'],
+  };
+}
+
+// Switch a plan to the 5-minute version. Its one-time changes (lighter, shorter, knee swap) carry over.
+async function toMinimum(w) {
+  await giveBackMods(w);
+  return minimumVersion(w);
+}
+
+// Back to the full plan from the 5-minute version: it uses its one-time changes up again.
+async function fromMinimum(w) {
+  const m = w.full?.mods;
+  if (m) {
+    if (m.short) S.adapt.shortNext = false;
+    if (m.light) S.adapt.lightNext = false;
+    if (m.lightLegs) S.adapt.lightLegsNext = false;
+    S.adapt.kneeSwap = (S.adapt.kneeSwap || []).filter(l => !(m.kneeSwap || []).includes(l));
+    await saveAdapt();
+  }
+  return fullVersion(w);
 }
 
 // "Very sore": warm-up, arm care and the stretch, about 10 minutes. No circuit, so it never asks
@@ -545,6 +636,21 @@ async function loadAdapt() {
 
 function saveAdapt() { return DB.put('settings', { ...S.adapt, key: 'adapt' }); }
 
+// First run of Phase 5a: the skip tax and the points both start today, so nothing is charged or awarded back.
+async function loadHabits() {
+  const today = dateKey();
+  const ledger = await DB.get('settings', 'ledger');
+  const bank = await DB.get('settings', 'bank');
+  S.ledger = { ...DEFAULT_LEDGER, ...(ledger || {}) };
+  S.bank = { ...DEFAULT_BANK, ...(bank || {}) };
+  S.ledger.since ||= today;
+  S.bank.since ||= today;
+  if (!ledger) await saveLedger();
+  if (!bank) await saveBank();
+}
+function saveLedger() { return DB.put('settings', { ...S.ledger, key: 'ledger' }); }
+function saveBank() { return DB.put('settings', { ...S.bank, key: 'bank' }); }
+
 // First run of Phase 3: today's days stand for all of history (there was no record before).
 async function loadSchedule() {
   const saved = await DB.get('settings', 'schedule');
@@ -583,13 +689,14 @@ async function invalidateTodayPlan() {
   if (logs.length) return;
   const existing = await DB.get('workouts', today);
   if (existing?.mobility) return; // a Very sore day keeps its mobility session
-  await giveBackMods(existing); // so the rebuilt plan gets them too
+  await giveBackMods(existing?.minimum ? null : existing); // so the rebuilt plan gets them too (a 5-minute plan already gave them back)
   await DB.delete('workouts', today);
-  // Rebuild now when the plan carries a choice: an extra workout, the 10-minute version, a soreness answer.
-  if (existing && (!existing.scheduled || existing.short || existing.soreness)) {
+  // Rebuild now when the plan carries a choice: an extra workout, the 10- or 5-minute version, a soreness answer.
+  if (existing && (!existing.scheduled || existing.short || existing.minimum || existing.soreness)) {
     let w = await generateWorkout(today, { scheduled: existing.scheduled });
     if (existing.soreness) w.soreness = existing.soreness;
     if (existing.short) w = shortVersion(w);
+    if (existing.minimum) w = await toMinimum(w);
     await DB.put('workouts', w);
   }
 }
@@ -641,14 +748,34 @@ function circuitSetsDone(log) {
   return (log.exercises || []).filter(e => e.block === 'circuit').reduce((n, e) => n + (e.setsDone || 0), 0);
 }
 function countsAsWorkout(log) {
+  if (log.kind === 'minimum') return false;
   if (!log.exercises?.length) return log.status === 'completed';
   return circuitSetsDone(log) > 0;
 }
 
-// A Very sore mobility session is a real show-up: it counts for the streak and calendar,
-// but never for the week, the ramp, or the rotation (those use countsAsWorkout).
+// A Very sore mobility session or a 5-minute "Just show up" is a real show-up: it counts for the streak
+// and calendar (and is never taxed), but never for the week, the ramp, or the rotation (those use countsAsWorkout).
 function countsForStreak(log) {
-  return countsAsWorkout(log) || (log.kind === 'mobility' && (log.setsDone || 0) > 0);
+  return countsAsWorkout(log) || ((log.kind === 'mobility' || log.kind === 'minimum') && (log.setsDone || 0) > 0);
+}
+
+// Reward points for one log: 10 for a finished workout, 5 for a smaller show-up. Habits.bank keeps the best per day.
+function logPoints(log) {
+  if (countsAsWorkout(log)) return log.status === 'completed' ? POINTS_FULL : POINTS_SMALL;
+  return countsForStreak(log) ? POINTS_SMALL : 0;
+}
+
+async function bankStatus(logs) {
+  logs ||= await DB.getAll('logs');
+  return Habits.bank({ since: S.bank.since, awards: logs.map(l => ({ date: l.date, points: logPoints(l) })), redemptions: S.bank.redemptions });
+}
+
+async function ledgerStatus(facts) {
+  const f = facts || await historyFacts();
+  return Habits.ledger({
+    since: S.ledger.since, today: dateKey(), planned: isPlannedDay,
+    showedUp: new Set([...f.done, ...f.partial]), amount: S.settings.skipTaxAmount, payments: S.ledger.payments,
+  });
 }
 
 // What the calendar and streak need, from every log. Only logs with circuit sets (or mobility) count.
@@ -825,13 +952,13 @@ async function renderToday() {
     hero = `
       <div class="card hero hero-done">
         <div class="done-icon">${ICONS.check}</div>
-        <div class="hero-kicker" style="color:var(--win)">Done for today</div>
+        <div class="hero-kicker" style="color:var(--win)">${log.kind === 'minimum' ? 'You showed up' : 'Done for today'}</div>
         <div class="hero-title">${esc(log.name || DAY_TYPES[log.dayType]?.name || 'Workout')}</div>
         <div class="hero-meta">
           <span class="chip">${ICONS.clock}<span class="num">${fmtMinutes(log.durationSec)}</span></span>
           <span class="chip win">${ICONS.check}<span class="num">${log.setsDone} of ${log.setsPlanned} sets</span></span>
         </div>
-        ${workout ? `<button class="text-btn" data-action="start">${session && session.workoutId === today ? 'Resume extra session' : 'Train again'}</button>` : ''}
+        ${workout ? `<button class="text-btn" data-action="start">${session && session.workoutId === today ? 'Resume extra session' : workout.minimum ? 'Do the full workout too' : 'Train again'}</button>` : ''}
       </div>`;
     if (pending) {
       dock = `<button class="btn btn-primary btn-xl" data-action="checkin">Check in</button>`;
@@ -850,19 +977,25 @@ async function renderToday() {
     }).join('');
     const block = kind => workout.blocks.find(b => b.kind === kind);
     const askSore = S.settings.sorenessPrompt && untouched && workout.scheduled && isPlannedDay(today)
-      && !workout.mobility && !workout.short && !workout.soreness;
-    const switchLink = !untouched ? ''
-      : workout.mobility ? `<button class="text-btn" data-action="unsore">Feeling OK? Use the normal workout</button>`
-      : workout.short ? `<button class="text-btn" data-action="full">Use the full workout</button>`
-      : `<button class="text-btn" data-action="short">Short on time? Do a 10-minute version</button>`;
+      && !workout.mobility && !workout.short && !workout.minimum && !workout.soreness;
+    const links = !untouched ? []
+      : workout.mobility ? [`<button class="text-btn" data-action="unsore">Feeling OK? Use the normal workout</button>`]
+      : workout.short || workout.minimum ? [`<button class="text-btn" data-action="full">Use the full workout</button>`]
+      : [`<button class="text-btn" data-action="short">Short on time? Do a 10-minute version</button>`,
+         `<button class="text-btn" data-action="minimum">Just show up: 5 minutes</button>`];
+    if (untouched && workout.scheduled && isPlannedDay(today) && !workout.mobility) {
+      links.push(`<button class="text-btn muted-link" data-action="excuse" data-day="${today}">Sick or traveling? Excuse today</button>`);
+    }
+    const switchLink = links.length ? `<div class="alt-links">${links.join('')}</div>` : '';
     const moves = workout.blocks.filter(b => !b.optional).reduce((n, b) => n + b.items.length, 0);
+    const blockTitle = b => b.kind === 'circuit' ? (b.rounds === 1 ? 'Main circuit · 1 round' : 'Main circuit') : b.label;
     hero = `
       <div class="card hero">
-        <div class="hero-kicker">${workout.mobility ? 'Recovery' : workout.scheduled ? "Today's workout" : 'Extra workout'}</div>
+        <div class="hero-kicker">${workout.mobility ? 'Recovery' : workout.minimum ? 'Just show up' : workout.scheduled ? "Today's workout" : 'Extra workout'}</div>
         <div class="hero-title">${esc(workout.name)}</div>
         <div class="hero-meta">
           <span class="chip accent">${ICONS.clock}<span class="num">~${fmtMinutes(workout.estSec)}</span></span>
-          ${circuit ? `<span class="chip">${ICONS.list}<span class="num">${circuit.items.length} exercises</span></span>
+          ${circuit && !workout.minimum ? `<span class="chip">${ICONS.list}<span class="num">${circuit.items.length} exercises</span></span>
           <span class="chip">${ICONS.repeat}<span class="num">${circuit.rounds} rounds</span></span>`
             : `<span class="chip">${ICONS.list}<span class="num">${moves} moves</span></span>`}
           ${finisher ? `<span class="chip">${ICONS.zap}Finisher</span>` : ''}
@@ -878,7 +1011,7 @@ async function renderToday() {
         </div>` : ''}
         ${switchLink}
         <ul class="ex-list">
-          ${workout.mobility ? ['warmup', 'armcare', 'stretch'].map(k => block(k) ? `<li class="ex-block">${esc(block(k).label)}</li>${exRows(block(k).items)}` : '').join('') : `
+          ${workout.mobility || workout.minimum ? ['warmup', 'circuit', 'armcare', 'stretch'].map(k => block(k) ? `<li class="ex-block">${esc(blockTitle(block(k)))}</li>${exRows(block(k).items)}` : '').join('') : `
           ${circuit ? `<li class="ex-block">Main circuit</li>${exRows(circuit.items)}` : ''}
           ${finisher ? `<li class="ex-block">Finisher · 30s on / 30s off</li>${exRows(finisher.items)}` : ''}
           ${armcare ? `<li class="ex-block">Arm care</li>${exRows(armcare.items)}` : ''}`}
@@ -890,15 +1023,20 @@ async function renderToday() {
     hero = `
       <div class="card hero hero-rest">
         <div class="rest-icon">${ICONS.moon}</div>
-        <div class="hero-title">Rest day</div>
-        <p>${isForcedRest(today) && isWorkoutDay(dow) ? 'Recovering from a Wiped out session. Walk, stretch, or nothing.' : 'Walk, stretch, or nothing.'}</p>
+        <div class="hero-title">${excuseFor(today) ? 'Excused today' : 'Rest day'}</div>
+        <p>${excuseFor(today) ? `${EXCUSE_TEXT[excuseFor(today).reason]}. It won't count as a miss. Rest up.`
+          : isForcedRest(today) && isWorkoutDay(dow) ? 'Recovering from a Wiped out session. Walk, stretch, or nothing.' : 'Walk, stretch, or nothing.'}</p>
         ${next ? `<p style="margin-top:10px">Next workout: <strong style="color:var(--text)">${esc(next)}</strong></p>` : ''}
-        <button class="text-btn" data-action="train-anyway">Train anyway</button>
+        <div class="alt-links">
+          <button class="text-btn" data-action="train-anyway">Train anyway</button>
+          ${excuseFor(today) ? `<button class="text-btn muted-link" data-action="unexcuse" data-day="${today}">Undo excuse</button>` : ''}
+        </div>
       </div>`;
   }
 
   const wk = await weekSummary(now);
-  const sk = await currentStreak();
+  const facts = await historyFacts();
+  const sk = await currentStreak(facts);
   const weekHtml = `
     <div class="card">
       <div class="week-head">
@@ -913,6 +1051,7 @@ async function renderToday() {
           const cls = ['week-day'];
           if (isPlannedDay(k)) cls.push('planned');
           if (wk.doneDates.has(k)) cls.push('done');
+          else if (facts.done.has(k) || facts.partial.has(k)) cls.push('showed'); // a 5-minute or mobility day
           if (k === today) cls.push('today');
           if (i === SATURDAY) cls.push('off');
           return `<div class="${cls.join(' ')}"><span class="wd">${DAY_LETTER[i]}</span><span class="dot">${wk.doneDates.has(k) ? ICONS.check : ''}</span></div>`;
@@ -923,7 +1062,10 @@ async function renderToday() {
   const updateBanner = Update.waiting
     ? `<button class="update-banner" data-action="update">${ICONS.refresh}<span>Update ready, tap to reload</span></button>`
     : '';
-  $('#view-today').innerHTML = updateBanner + largeTitle('Today', fmtLongDate(now)) + await rampCard() + backupCard(today) + hero
+  const scorecard = now.getDay() === 0 && S.settings.scorecard && S.settings.scorecardSeen !== today
+    ? await scorecardHtml(today, facts, { actions: true }) : '';
+  $('#view-today').innerHTML = updateBanner + largeTitle('Today', fmtLongDate(now)) + scorecard + await rampCard()
+    + (scorecard ? '' : backupCard(today)) + await habitCards(facts) + hero
     + `<div style="height:12px"></div>` + weekHtml;
   setDock(dock);
 }
@@ -948,6 +1090,125 @@ function backupCard(today) {
 function backupStale() {
   const lb = S.settings.lastBackup;
   return !lb || daysSince(lb) > BACKUP_STALE_DAYS;
+}
+const backupDue = () => !S.settings.lastBackup || daysSince(S.settings.lastBackup) >= 6;
+
+/* ---------- Habits: skip tax, wife notice (SPEC.md → Habit features) ---------- */
+const money = n => `$${n}`;
+
+// Misses since the last payoff: a payment on a day covers every miss before it.
+const unpaid = (led, key) => !led.lastPaid || key >= led.lastPaid;
+// A recent missed day can still be excused (sick, travel), unless it's already been paid for.
+const canExcuse = (led, key) => unpaid(led, key) && daysSince(key) <= 14;
+
+function smsHref(owed) {
+  const st = S.settings;
+  const body = encodeURIComponent(Habits.fillMessage(st.noticeMessage, owed));
+  return `sms:${st.noticePhone.replace(/[^\d+]/g, '')}${isIOS() ? '&' : '?'}body=${body}`;
+}
+
+async function habitCards(facts) {
+  const st = S.settings;
+  if (!st.skipTax) return '';
+  const led = await ledgerStatus(facts);
+  let html = '';
+  if (st.notice && Habits.noticeDue({ owed: led.owed, threshold: st.noticeThreshold, sent: S.ledger.noticesSent })) {
+    const who = st.noticeName || 'her';
+    const [body, actions] = !st.noticePhone
+      ? [`The IOU is at ${money(led.owed)}. Add ${esc(who === 'her' ? 'her' : who + "'s")} number to send the text.`,
+         `<button class="btn btn-primary" data-action="notice-setup">Set up</button>`]
+      : S.ledger.noticeOpen
+      ? ['Did the text send?', `<div class="ramp-actions">
+          <a class="btn btn-secondary" href="${esc(smsHref(led.owed))}" data-action="notice-open">Open again</a>
+          <button class="btn btn-primary" data-action="notice-sent">Sent it</button></div>`]
+      : [`The IOU hit ${money(led.owed)}. One text, then this card goes away.`,
+         `<a class="btn btn-primary" href="${esc(smsHref(led.owed))}" data-action="notice-open">Notify ${esc(who)}</a>`];
+    html += `
+      <div class="card notice-card">
+        <div class="backup-title">${ICONS.message}<span>Notify ${esc(who)}</span></div>
+        <p class="muted">${body}</p>
+        <div class="notice-actions">${actions}</div>
+      </div>`;
+  }
+  if (led.owed > 0) {
+    const n = led.misses.filter(k => unpaid(led, k)).length;
+    html += `
+      <div class="card owe-card">
+        <div class="owe-head">
+          <div><div class="muted">You owe</div><div class="owe-num num">${money(led.owed)}</div></div>
+          <button class="btn btn-secondary owe-paid" data-action="paid">Paid</button>
+        </div>
+        <p class="muted">${n ? `${n} missed workout${n === 1 ? '' : 's'} at ${money(st.skipTaxAmount)}. ` : ''}Sick or traveling? Excuse the day on the History calendar.</p>
+      </div>`;
+  }
+  return html;
+}
+
+/* ---------- Weekly scorecard: the 8 full weeks before this one ---------- */
+async function scorecardWeeks(today, facts) {
+  const thisWeek = weekStart(parseKey(today));
+  const firstWeek = facts.first ? Track.weekStartKey(facts.first) : null;
+  const weeks = [];
+  for (let n = 8; n >= 1; n--) {
+    const start = addDays(thisWeek, -7 * n);
+    if (!firstWeek || dateKey(start) < firstWeek) continue;
+    const wk = await weekSummary(start);
+    if (!wk.planned) continue;
+    weeks.push({ start: dateKey(start), done: wk.done, planned: wk.planned, pct: Math.min(100, Math.round(wk.done / wk.planned * 100)) });
+  }
+  return weeks;
+}
+
+async function scorecardHtml(today, facts, { actions = false } = {}) {
+  const weeks = await scorecardWeeks(today, facts);
+  if (!weeks.length) return '';
+  const lastStart = dateKey(addDays(weekStart(parseKey(today)), -7));
+  const last = weeks.find(w => w.start === lastStart);
+  const sk = await currentStreak(facts);
+  const st = S.settings;
+  const stats = [
+    [last ? `${last.done}<span class="of"> / ${last.planned}</span>` : '–', 'Workouts'],
+    [`${sk.count}`, 'Streak'],
+    st.skipTax ? [money((await ledgerStatus(facts)).owed), 'Skip tax'] : null,
+    st.rewardsOn ? [`${(await bankStatus(facts.logs)).balance}`, 'Points'] : null,
+  ].filter(Boolean);
+  return `
+    <div class="card scorecard ${actions ? 'on-today' : ''}">
+      <div class="backup-title">${ICONS.chart}<span>Weekly scorecard</span></div>
+      <div class="muted">Week of ${esc(shortDate(lastStart))}</div>
+      <div class="sc-stats">${stats.map(([v, l]) => `<div><div class="sc-num num">${v}</div><div class="sc-label">${l}</div></div>`).join('')}</div>
+      ${weeks.length >= 2 ? trendChart(weeks) : '<p class="muted sc-wait">The trend chart starts after your second full week.</p>'}
+      ${actions && backupDue() ? `<p class="sc-backup ${backupStale() ? 'stale' : ''}">${S.settings.lastBackup
+        ? `Last backup: ${esc(fmtShortDate(parseKey(S.settings.lastBackup)))}${backupStale() ? ` (${daysSince(S.settings.lastBackup)} days ago)` : ''}` : 'No backup yet'}</p>` : ''}
+      ${actions ? `<div class="ramp-actions ${backupDue() ? '' : 'one'}">
+        ${backupDue() ? `<button class="btn btn-secondary" data-action="export">Back up now</button>` : ''}
+        <button class="btn btn-primary" data-action="scorecard-seen">Got it</button>
+      </div>` : ''}
+    </div>`;
+}
+
+// Weekly completion % with the average and upper/lower limits (Habits.limits). Plain SVG.
+function trendChart(weeks) {
+  const W = 320, H = 150, L = 34, R = 10, T = 8, B = 22;
+  const lim = Habits.limits(weeks.map(w => w.pct));
+  const x = i => L + i * (W - L - R) / (weeks.length - 1);
+  const y = v => T + (100 - v) * (H - T - B) / 100;
+  const grid = [0, 50, 100].map(v => `<line class="ch-grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text class="ch-ylab" x="${L - 6}" y="${y(v) + 4}">${v}%</text>`).join('');
+  const hline = (v, cls) => v == null ? '' : `<line class="${cls}" x1="${L}" x2="${W - R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/>`;
+  const line = weeks.map((w, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)} ${y(w.pct).toFixed(1)}`).join(' ');
+  const dots = weeks.map((w, i) => `<circle class="ch-dot ${lim.upper != null && (w.pct > lim.upper || w.pct < lim.lower) ? 'out' : ''}" cx="${x(i)}" cy="${y(w.pct)}" r="4"/>`).join('');
+  const last = weeks.length - 1;
+  const xlabs = [0, last].map(i => `<text class="ch-xlab" x="${x(i)}" y="${H - 5}" text-anchor="${i ? 'end' : 'start'}">${esc(shortDate(weeks[i].start))}</text>`).join('');
+  return `
+    <div class="chart">
+      <div class="chart-legend"><span><i class="lg-line"></i>Avg ${Math.round(lim.mean)}%</span>${lim.upper != null ? `<span><i class="lg-limit"></i>Limits ${Math.round(lim.lower)}–${Math.round(lim.upper)}%</span>` : ''}</div>
+      <svg class="ch" viewBox="0 0 ${W} ${H}" role="img" aria-label="Workouts done each week, last ${weeks.length} weeks">
+        ${grid}${xlabs}
+        ${hline(lim.upper, 'ch-limit')}${hline(lim.lower, 'ch-limit')}${hline(lim.mean, 'ch-mean')}
+        <path class="ch-pct" d="${line}"/>
+        ${dots}
+      </svg>
+    </div>`;
 }
 
 function nextWorkoutDay(from) {
@@ -995,7 +1256,7 @@ function logRow(l) {
       <div class="row log-row">
         <div class="row-main">
           <div class="row-title">${esc(l.name || DAY_TYPES[l.dayType]?.name || 'Workout')}</div>
-          <div class="row-sub num">${esc(fmtShortDate(parseKey(l.date)))} · ${fmtMinutes(l.durationSec)} · ${l.setsDone}/${l.setsPlanned} sets${l.short ? ' · 10-min version' : ''}${l.stretchDone && l.kind !== 'mobility' ? ' · stretch' : ''}</div>
+          <div class="row-sub num">${esc(fmtShortDate(parseKey(l.date)))} · ${fmtMinutes(l.durationSec)} · ${l.setsDone}/${l.setsPlanned} sets${l.short ? ' · 10-min version' : ''}${l.kind === 'minimum' ? ' · 5-min version' : ''}${l.stretchDone && l.kind !== 'mobility' ? ' · stretch' : ''}</div>
           ${checkInText(l) ? `<div class="row-sub">${esc(checkInText(l))}</div>` : ''}
           ${levelUpText(l) ? `<div class="row-sub levelup-line">${ICONS.levelUp}${esc(levelUpText(l))}</div>` : ''}
         </div>
@@ -1018,8 +1279,9 @@ function calendarHtml(f, today) {
   const title = new Date(y, m, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
   const cells = Track.monthGrid(y, m).flat().map(({ key, inMonth }) => {
     const state = Track.dayState({ key, today, first: f.first, done: f.done, partial: f.partial, planned: isPlannedDay });
-    const cls = ['cal-day', state, inMonth ? '' : 'out', key === S.calSel ? 'sel' : ''].filter(Boolean).join(' ');
-    return `<button class="${cls}" data-cal-day="${key}" aria-label="${esc(fmtShortDate(parseKey(key)))}: ${CAL_TEXT[state]}">${parseKey(key).getDate()}</button>`;
+    const excused = state === 'rest' && !!excuseFor(key);
+    const cls = ['cal-day', state, excused ? 'excused' : '', inMonth ? '' : 'out', key === S.calSel ? 'sel' : ''].filter(Boolean).join(' ');
+    return `<button class="${cls}" data-cal-day="${key}" aria-label="${esc(fmtShortDate(parseKey(key)))}: ${excused ? 'Excused' : CAL_TEXT[state]}">${parseKey(key).getDate()}</button>`;
   }).join('');
   return `
     <div class="card cal">
@@ -1053,19 +1315,34 @@ async function renderHistory() {
       <div class="card stat"><div class="stat-num streak-num">${ICONS.flame}${sk.count}</div><div class="stat-label">Streak</div>${sk.oneMiss && sk.count ? `<div class="stat-hint">Don't miss next</div>` : ''}</div>
       <div class="card stat"><div class="stat-num">${completed.length}</div><div class="stat-label">All workouts</div></div>
     </div>
-    <div class="section-foot">Streak: one missed day is fine, two in a row resets it. Rest days never count against you.</div>
+    <div class="section-foot">Streak: one missed day is fine, two in a row resets it. Rest days and excused days never count against you.</div>
     <div style="height:12px"></div>` + calendarHtml(f, today);
   if (S.calSel) {
     const dayLogs = logs.filter(l => l.date === S.calSel);
     const state = Track.dayState({ key: S.calSel, today, first: f.first, done: f.done, partial: f.partial, planned: isPlannedDay });
+    const ex = excuseFor(S.calSel);
+    const led = await ledgerStatus(f);
+    const dayRow = ex
+      ? `<div class="row"><div class="row-main"><div class="row-title">Excused · ${EXCUSE_TEXT[ex.reason]}</div><div class="row-sub">Not a miss</div></div>
+          ${unpaid(led, S.calSel) ? `<button class="btn btn-small btn-secondary" data-action="unexcuse" data-day="${S.calSel}">Undo</button>` : ''}</div>`
+      : `<div class="row"><div class="row-main"><div class="row-title">${CAL_TEXT[state]}</div>${state === 'missed' && S.settings.skipTax && S.calSel >= S.ledger.since && unpaid(led, S.calSel) ? `<div class="row-sub">${money(S.settings.skipTaxAmount)} skip tax</div>` : ''}</div>
+          ${state === 'missed' && canExcuse(led, S.calSel) ? `<button class="btn btn-small btn-secondary" data-action="excuse" data-day="${S.calSel}">Excuse</button>` : ''}</div>`;
     html += `<div class="section-label">${esc(fmtLongDate(parseKey(S.calSel)))}</div>` + (dayLogs.length
       ? `<div class="group">${dayLogs.map(logRow).join('')}</div>`
-      : `<div class="group"><div class="row"><div class="row-main"><div class="row-title">${CAL_TEXT[state]}</div></div></div></div>`);
+      : `<div class="group">${dayRow}</div>`);
   }
+  const card = await scorecardHtml(today, f);
+  if (card) html += `<div class="section-label">Last week</div>` + card;
   if (!logs.length) {
     html += `<div class="empty">${ICONS.history}<strong>No workouts yet</strong>Finished workouts show up here.</div>`;
   } else {
     html += `<div class="section-label">Workouts</div><div class="group">` + logs.map(logRow).join('') + `</div>`;
+  }
+  const cashed = [...S.bank.redemptions].sort((a, b) => (b.at || '').localeCompare(a.at || ''));
+  if (cashed.length) {
+    html += `<div class="section-label">Rewards cashed in</div><div class="group">` + cashed.map(r => `
+      <div class="row"><div class="row-main"><div class="row-title">${esc(r.name)}</div><div class="row-sub">${esc(fmtShortDate(parseKey(r.date)))}</div></div>
+        <span class="row-value num">−${r.cost} pts</span></div>`).join('') + `</div>`;
   }
   $('#view-history').innerHTML = html;
 }
@@ -1254,7 +1531,7 @@ const Weigh = {
 async function maybeAskWeighIn() {
   const today = dateKey();
   if (!S.settings.weighInPrompt || parseKey(today).getDay() !== 0 || S.settings.weighInSkipped === today) return;
-  const busy = P.active || ['#checkin', '#complete', '#levelup', '#sheet-root', '#wsheet'].some(sel => !$(sel).hidden);
+  const busy = P.active || ['#checkin', '#complete', '#levelup', '#sheet-root', '#wsheet', '#fsheet'].some(sel => !$(sel).hidden);
   if (busy) return;
   if ((await DB.getAll('body')).some(e => e.date === today)) return;
   Weigh.open({ prompted: true });
@@ -1286,7 +1563,7 @@ async function renderMe() {
     const sub = [`${ex.name}${l.id === 'armCare' ? '' : ` · rung ${idx + 1} of ${l.rungs.length}`}`, ...hidden].join(' · ');
     return `<div class="row"><div class="row-main"><div class="row-title">${esc(l.pattern)}</div><div class="row-sub">${esc(sub)}</div></div><span class="row-value num">${esc(l.id === 'conditioning' ? '30s on' : targetText(item))}</span></div>`;
   }).join('');
-  const html = largeTitle('Me') + await bodyHtml() + `
+  const html = largeTitle('Me') + await bodyHtml() + await rewardsHtml() + habitsSettingsHtml() + `
     <div class="section-label">Workout days</div>
     <div class="group">
       <div class="days">
@@ -1362,6 +1639,179 @@ async function renderMe() {
   $('#view-me').innerHTML = html;
 }
 
+/* ---------- Me → Rewards: the reward bank (SPEC.md → Habit features) ---------- */
+async function rewardsHtml() {
+  if (!S.settings.rewardsOn) return '';
+  const bal = (await bankStatus()).balance;
+  const rewards = [...S.bank.rewards].sort((a, b) => a.cost - b.cost);
+  return `
+    <div class="section-label">Rewards</div>
+    <div class="card bank-card">
+      <div class="body-num num">${bal}<span class="unit"> points</span></div>
+      <div class="muted">${POINTS_FULL} per workout, ${POINTS_SMALL} for a 5-minute or mobility day</div>
+    </div>
+    <div class="group" style="margin-top:12px">
+      ${rewards.map(r => `
+      <div class="row">
+        <button class="row-main reward-edit" data-reward-edit="${esc(r.id)}"><div class="row-title">${esc(r.name)}</div><div class="row-sub num">${r.cost} points</div></button>
+        <button class="btn btn-small ${bal >= r.cost ? 'btn-primary' : 'btn-secondary'}" data-reward-cash="${esc(r.id)}" ${bal >= r.cost ? '' : 'disabled'}>Cash in</button>
+      </div>`).join('')}
+      <button class="row btn-row" data-action="reward-add">${ICONS.plus}<span>Add reward</span></button>
+    </div>
+    <div class="section-foot">${rewards.length ? 'Tap a reward to change or delete it. Cash-ins show up in History.' : 'Pick rewards and their prices ahead of time, like a new game for 300 points.'}</div>`;
+}
+
+/* ---------- Me → Habits: skip tax, notice, rewards, scorecard switches ---------- */
+function habitsSettingsHtml() {
+  const st = S.settings;
+  const who = st.noticeName || 'her';
+  return `
+    <div class="section-label">Habits</div>
+    <div class="group">
+      ${switchRow('Skip tax', 'skipTax', { sub: `${money(st.skipTaxAmount)} per missed workout · ${st.excuseLimit} excused skips a month` })}
+      ${st.skipTax ? switchRow(`Text ${who} at ${money(st.noticeThreshold)}`, 'notice', { sub: st.noticePhone ? `${st.noticeName ? st.noticeName + ' · ' : ''}${st.noticePhone}` : 'No number yet' }) : ''}
+      ${st.skipTax ? `<button class="row btn-row" data-action="notice-setup">${ICONS.message}<span>Skip tax and text settings</span></button>` : ''}
+      ${switchRow('Reward points', 'rewardsOn', { sub: 'Points for workouts, cashed in for rewards you pick' })}
+      ${switchRow('Sunday scorecard', 'scorecard', { sub: 'Last week at a glance on Sunday mornings' })}
+    </div>
+    <div class="section-foot">Turning the skip tax back on starts a fresh ledger at $0.</div>`;
+}
+
+// A small form, anchored to the top so the keyboard never covers it. Resolves to the values, { extra: true }, or null.
+function formSheet({ title, sub = '', fields, submit = 'Save', extra = null, validate }) {
+  return new Promise(resolve => {
+    const root = $('#fsheet');
+    root.innerHTML = `
+      <div class="sheet-backdrop" data-f="cancel"></div>
+      <form class="wsheet" autocomplete="off">
+        <div class="ws-title">${esc(title)}</div>
+        ${sub ? `<div class="ws-sub">${esc(sub)}</div>` : ''}
+        ${fields.map(f => `
+        <label class="fs-field"><span>${esc(f.label)}</span>${f.type === 'textarea'
+          ? `<textarea name="${f.name}" rows="3">${esc(f.value ?? '')}</textarea>`
+          : `<input name="${f.name}" type="${f.type === 'tel' ? 'tel' : 'text'}" ${f.type === 'number' ? 'inputmode="numeric"' : ''} value="${esc(f.value ?? '')}" placeholder="${esc(f.placeholder || '')}">`}</label>`).join('')}
+        <div class="ws-hint error fs-error"></div>
+        <div class="ws-actions">
+          <button type="button" class="btn btn-secondary" data-f="cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary">${esc(submit)}</button>
+        </div>
+        ${extra ? `<button type="button" class="text-btn fs-extra" data-f="extra">${esc(extra)}</button>` : ''}
+      </form>`;
+    root.hidden = false;
+    const form = root.querySelector('form');
+    const done = v => { document.activeElement?.blur(); root.hidden = true; root.innerHTML = ''; resolve(v); };
+    root.onclick = e => {
+      const f = e.target.closest('[data-f]')?.dataset.f;
+      if (f === 'cancel') done(null);
+      else if (f === 'extra') done({ extra: true });
+    };
+    form.onsubmit = e => {
+      e.preventDefault();
+      const values = Object.fromEntries(fields.map(f => [f.name, form.elements[f.name].value.trim()]));
+      const problem = validate ? validate(values) : null;
+      if (problem) { root.querySelector('.fs-error').textContent = problem; return; }
+      done(values);
+    };
+  });
+}
+
+const wholeIn = (v, lo, hi) => /^\d+$/.test(v) && Number(v) >= lo && Number(v) <= hi;
+
+async function editReward(id) {
+  const r = id ? S.bank.rewards.find(x => x.id === id) : null;
+  const v = await formSheet({
+    title: r ? 'Edit reward' : 'Add reward',
+    sub: `${POINTS_FULL} points per workout. About 3 workouts a week is ~120 points a month.`,
+    fields: [
+      { name: 'name', label: 'Reward', value: r?.name, placeholder: 'New running shoes' },
+      { name: 'cost', label: 'Points', value: r?.cost, type: 'number', placeholder: '300' },
+    ],
+    extra: r ? 'Delete reward' : null,
+    validate: v => !v.name ? 'Give it a name' : !wholeIn(v.cost, 1, 100000) ? 'Points: a whole number, like 300' : null,
+  });
+  if (!v) return;
+  if (v.extra) {
+    const ok = await actionSheet({ title: `Delete "${r.name}"? Past cash-ins stay in History.`, actions: [{ label: 'Delete', value: 'delete', destructive: true }] });
+    if (ok !== 'delete') return;
+    S.bank.rewards = S.bank.rewards.filter(x => x.id !== id);
+  } else if (r) {
+    Object.assign(r, { name: v.name, cost: Number(v.cost) });
+  } else {
+    S.bank.rewards.push({ id: `r${Date.now().toString(36)}`, name: v.name, cost: Number(v.cost) });
+  }
+  await saveBank();
+  renderMe();
+}
+
+async function cashIn(id) {
+  const r = S.bank.rewards.find(x => x.id === id);
+  if (!r) return;
+  const bal = (await bankStatus()).balance;
+  if (bal < r.cost) return toast(`${r.cost - bal} more points to go`);
+  const ok = await actionSheet({ title: `Cash in ${r.name} for ${r.cost} points? You'll have ${bal - r.cost} left.`, actions: [{ label: 'Cash in', value: 'cash' }] });
+  if (ok !== 'cash') return;
+  S.bank.redemptions.push({ date: dateKey(), at: new Date().toISOString(), rewardId: r.id, name: r.name, cost: r.cost });
+  await saveBank();
+  toast(`Enjoy: ${r.name}`);
+  renderMe();
+}
+
+async function editNotice() {
+  const st = S.settings;
+  const v = await formSheet({
+    title: 'Skip tax and text',
+    sub: 'The text opens in Messages, ready to send. {amount} becomes what you owe.',
+    fields: [
+      { name: 'amount', label: 'Per missed workout ($)', value: st.skipTaxAmount, type: 'number' },
+      { name: 'limit', label: 'Excused skips a month', value: st.excuseLimit, type: 'number' },
+      { name: 'threshold', label: 'Text her at ($)', value: st.noticeThreshold, type: 'number' },
+      { name: 'name', label: 'Her name', value: st.noticeName, placeholder: 'Optional' },
+      { name: 'phone', label: 'Her phone number', value: st.noticePhone, type: 'tel', placeholder: '555 123 4567' },
+      { name: 'message', label: 'Message', value: st.noticeMessage, type: 'textarea' },
+    ],
+    validate: v => !wholeIn(v.amount, 1, 100) ? 'Per missed workout: $1 to $100'
+      : !wholeIn(v.limit, 0, 10) ? 'Excused skips: 0 to 10'
+      : !wholeIn(v.threshold, 1, 1000) ? 'Text her at: $1 to $1000'
+      : v.phone && v.phone.replace(/[^\d]/g, '').length < 7 ? 'That phone number looks too short'
+      : !v.message ? 'Write a message' : null,
+  });
+  if (!v) return;
+  // Written directly: saveSettings would rebuild today's plan, which these have no reason to touch.
+  Object.assign(st, { skipTaxAmount: Number(v.amount), excuseLimit: Number(v.limit), noticeThreshold: Number(v.threshold), noticeName: v.name, noticePhone: v.phone, noticeMessage: v.message });
+  await DB.put('settings', st);
+  toast('Saved');
+  if (S.tab === 'today') renderToday(); else renderMe();
+}
+
+// Excuse a planned day (sick, travel): it stops being planned, so it's never a miss or taxed. Limited per month.
+async function excuseDay(key) {
+  const limit = S.settings.excuseLimit;
+  const left = Habits.excusesLeft(S.ledger.excused, key, limit);
+  const month = parseKey(key).toLocaleDateString(undefined, { month: 'long' });
+  if (!left) return toast(`No excused skips left in ${month}`);
+  const isToday = key === dateKey();
+  const choice = await actionSheet({
+    title: `Excuse ${isToday ? 'today' : fmtShortDate(parseKey(key))}? It won't count as a miss${S.settings.skipTax ? ' or cost anything' : ''}. ${left} of ${limit} left in ${month}.`,
+    actions: [{ label: 'Sick', value: 'sick' }, { label: 'Travel', value: 'travel' }],
+  });
+  if (!choice) return;
+  if (isToday) {
+    const w = await DB.get('workouts', key);
+    if (w && !(await logsFor(key)).length) {
+      await giveBackMods(w.minimum ? null : w); // the next workout gets them
+      await DB.delete('workouts', key);
+    }
+  }
+  S.ledger.excused = [...S.ledger.excused.filter(x => x.date !== key), { date: key, reason: choice }];
+  await saveLedger();
+  toast('Excused');
+}
+
+async function unexcuseDay(key) {
+  S.ledger.excused = S.ledger.excused.filter(x => x.date !== key);
+  await saveLedger();
+}
+
 // Debug line under Test sound and flash, so the phone can report what iOS is doing.
 function audioDebugText() {
   const session = navigator.audioSession
@@ -1374,6 +1824,10 @@ function audioDebugText() {
 }
 
 async function onMeClick(e) {
+  const cash = e.target.closest('[data-reward-cash]');
+  if (cash) return cashIn(cash.dataset.rewardCash);
+  const edit = e.target.closest('[data-reward-edit]');
+  if (edit) return editReward(edit.dataset.rewardEdit);
   const entry = e.target.closest('[data-body-id]');
   if (entry) {
     const choice = await actionSheet({ title: 'Delete this weigh-in?', actions: [{ label: 'Delete', value: 'delete', destructive: true }] });
@@ -1412,8 +1866,14 @@ async function onMeClick(e) {
 async function onMeChange(e) {
   const input = e.target;
   if (input.dataset.setting) {
-    await saveSettings({ [input.dataset.setting]: input.checked });
-    if (input.dataset.setting === 'flash') renderMe(); // show or hide Flash strength
+    const key = input.dataset.setting;
+    if (key === 'skipTax' && input.checked) {
+      // Back on: a fresh ledger, so the days it was off are never charged.
+      Object.assign(S.ledger, { since: dateKey(), payments: [], noticesSent: 0, noticeOpen: false });
+      await saveLedger();
+    }
+    await saveSettings({ [key]: input.checked });
+    if (['flash', 'skipTax', 'rewardsOn'].includes(key)) renderMe(); // show or hide the rows that depend on it
   } else if (input.dataset.equip) {
     const set = new Set(S.settings.equipment);
     input.checked ? set.add(input.dataset.equip) : set.delete(input.dataset.equip);
@@ -1426,9 +1886,8 @@ async function exportData() {
   const name = `workout-backup-${dateKey()}.json`;
   const json = JSON.stringify(data, null, 2);
   const file = new File([json], name, { type: 'application/json' });
-  const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   // On iPhone a share sheet is the reliable way to save a file ("Save to Files").
-  if (isIOS && navigator.canShare && navigator.canShare({ files: [file] })) {
+  if (isIOS() && navigator.canShare && navigator.canShare({ files: [file] })) {
     try { await navigator.share({ files: [file], title: name }); return markBackedUp(); }
     catch (err) { if (err.name === 'AbortError') return; }
   }
@@ -1813,12 +2272,14 @@ async function finishPlayer() {
     closePlayer();
     return showCompletion(practiceLog('completed'), before.done, before.done, before.planned, streakBefore, streakBefore);
   }
+  const pointsBefore = (await bankStatus()).earned;
   const log = await saveLog('completed');
   await DB.delete('settings', 'session');
   const after = await weekSummary();
   const streakAfter = (await currentStreak()).count;
+  const points = (await bankStatus()).earned - pointsBefore;
   closePlayer();
-  showCompletion(log, before.done, after.done, before.planned, streakBefore, streakAfter);
+  showCompletion(log, before.done, after.done, before.planned, streakBefore, streakAfter, points);
 }
 
 /* ---------- Logging ---------- */
@@ -1858,7 +2319,7 @@ function buildLog(status) {
     dayType: P.workout.dayType,
     name: P.workout.name,
     scheduled: P.workout.scheduled,
-    kind: P.workout.mobility ? 'mobility' : 'full',
+    kind: P.workout.mobility ? 'mobility' : P.workout.minimum ? 'minimum' : 'full',
     short: !!P.workout.short,
     status,
     startedAt: P.startedAt,
@@ -1888,11 +2349,12 @@ async function markStretchDone(logId) {
 }
 
 /* ---------- Completion moment ---------- */
-function showCompletion(log, fromCount, toCount, planned, streakFrom = 0, streakTo = streakFrom) {
+function showCompletion(log, fromCount, toCount, planned, streakFrom = 0, streakTo = streakFrom, points = 0) {
   S.lastLog = log;
   const el = $('#complete');
-  $('#c-title').textContent = log.practice ? 'Practice done' : 'Workout done';
-  $('#c-sub').textContent = `${log.name} · ${fmtMinutes(log.durationSec)}${log.practice ? ' · not saved' : ''}`;
+  $('#c-title').textContent = log.practice ? 'Practice done' : log.kind === 'minimum' ? 'You showed up' : 'Workout done';
+  const pts = points > 0 && S.settings.rewardsOn ? ` · +${points} points` : '';
+  $('#c-sub').textContent = `${log.name} · ${fmtMinutes(log.durationSec)}${log.practice ? ' · not saved' : pts}`;
   $('#c-practice').hidden = !log.practice;
   $('#c-done').textContent = countsAsWorkout(log) ? 'Check in' : 'Done';
   const count = $('#c-count');
@@ -2245,13 +2707,16 @@ function bindEvents() {
       const session = await DB.get('settings', 'session');
       const resume = !!session && session.workoutId === today;
       const doneToday = (await logsFor(today)).some(l => l.status === 'completed');
-      const planned = (await DB.get('workouts', today))?.scheduled !== false;
+      const w = await DB.get('workouts', today);
+      const planned = w?.scheduled !== false;
       // Today's planned workout (or resuming one) starts straight away. Anything extra asks first.
       if (!resume && (doneToday || !planned)) {
         const choice = await chooseSession(doneToday ? 'Train again' : 'Extra workout');
         if (choice === 'practice') return startPractice();
         if (choice !== 'real') return;
       }
+      // After a 5-minute show-up, training again means the full workout.
+      if (!resume && doneToday && w?.minimum) await DB.put('workouts', await fromMinimum(w));
       startWorkout({ resume });
     } else if (act === 'train-anyway') {
       const choice = await chooseSession('Train on a rest day');
@@ -2292,10 +2757,47 @@ function bindEvents() {
       S.settings.backupSkipped = dateKey();
       await DB.put('settings', S.settings);
       renderToday();
-    } else if (act === 'short' || act === 'full') {
+    } else if (act === 'short' || act === 'full' || act === 'minimum') {
       const w = await DB.get('workouts', dateKey());
       if (!w) return;
-      await DB.put('workouts', act === 'short' ? shortVersion(w) : fullVersion(w));
+      const next = act === 'short' ? shortVersion(w)
+        : act === 'minimum' ? await toMinimum(w)
+        : w.minimum ? await fromMinimum(w) : fullVersion(w);
+      await DB.put('workouts', next);
+      renderToday();
+    } else if (act === 'excuse' || act === 'unexcuse') {
+      const key = e.target.closest('[data-day]').dataset.day;
+      if (act === 'excuse') await excuseDay(key);
+      else await unexcuseDay(key);
+      showTab(S.tab);
+    } else if (act === 'paid') {
+      const owed = (await ledgerStatus()).owed;
+      if (!owed) return renderToday();
+      const choice = await actionSheet({ title: `Mark ${money(owed)} as paid? The ledger goes back to $0.`, actions: [{ label: 'Paid', value: 'paid' }] });
+      if (choice !== 'paid') return;
+      S.ledger.payments.push({ date: dateKey(), amount: owed });
+      Object.assign(S.ledger, { noticesSent: 0, noticeOpen: false });
+      await saveLedger();
+      toast('Paid. Clean slate.');
+      renderToday();
+    } else if (act === 'notice-open') {
+      // The link itself opens Messages. There's no way to know it was sent, so the card asks afterward.
+      S.ledger.noticeOpen = true;
+      await saveLedger();
+      setTimeout(() => { if (S.tab === 'today') renderToday(); }, 600);
+    } else if (act === 'notice-sent') {
+      const owed = (await ledgerStatus()).owed;
+      S.ledger.noticesSent = Math.max(S.ledger.noticesSent + 1, Math.floor(owed / S.settings.noticeThreshold));
+      S.ledger.noticeOpen = false;
+      await saveLedger();
+      renderToday();
+    } else if (act === 'notice-setup') {
+      editNotice();
+    } else if (act === 'reward-add') {
+      editReward(null);
+    } else if (act === 'scorecard-seen') {
+      S.settings.scorecardSeen = dateKey();
+      await DB.put('settings', S.settings);
       renderToday();
     } else if (act === 'sore') {
       setSoreness(e.target.closest('[data-sore]').dataset.sore);
@@ -2367,6 +2869,7 @@ async function boot() {
   await DB.init();
   await loadSettings();
   await loadAdapt();
+  await loadHabits();
   await loadSchedule();
   applyAccent();
   await loadExercises();

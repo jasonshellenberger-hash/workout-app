@@ -2,7 +2,7 @@
 
 A personal iPhone workout app (PWA): quiet 15–22 minute home workouts, a guided player with timers, and a local log. Plain HTML, CSS, and JavaScript. No framework and no build step. All data stays on the phone.
 
-**Phase 4 (this version):** everything in Phases 1–3 (plan generator, workout player with timers, logging, per-exercise check-in and progression, the 3 → 5 day ramp, weekly weigh-in and chart, history calendar, "never miss twice" streak) plus a 10-minute short-on-time version, a morning soreness check, and backup and import with a weekly Sunday reminder. See `SPEC.md` (kept local, not in the repo) for later phases.
+**Phase 5a (this version):** everything in Phases 1–4 (plan generator, workout player with timers, logging, per-exercise check-in and progression, the 3 → 5 day ramp, weekly weigh-in and chart, history calendar, "never miss twice" streak, 10-minute short-on-time version, morning soreness check, backup and import) plus a 5-minute "Just show up" workout, the skip tax ledger with excused days, a text to your wife at $20, a reward bank, and a Sunday weekly scorecard. See `SPEC.md` (kept local, not in the repo) for later phases.
 
 ## Files
 
@@ -11,6 +11,9 @@ A personal iPhone workout app (PWA): quiet 15–22 minute home workouts, a guide
 | `index.html` | App shell: the four tabs, workout player, completion screen |
 | `styles.css` | Theme tokens (colors from the spec), layout, animations |
 | `app.js` | Plan generator, Today / History / Me screens, workout player |
+| `adapt.js` | Check-in rules: progression, lighter days, the ramp |
+| `track.js` | Streak, calendar, and weigh-in math |
+| `habits.js` | Skip tax, reward points, and scorecard math |
 | `db.js` | Storage wrapper: IndexedDB, falling back to localStorage |
 | `exercises.json` | Every ladder, rung, rep range, form cue, and demo link. Edit exercises here. |
 | `manifest.json` | Home-screen install settings |
@@ -99,6 +102,20 @@ Only `exercises.json` changed? Still bump `CACHE_VERSION`.
 - **Screen stays on** during a workout (Screen Wake Lock). If iOS refuses the request, the app carries on without it.
 - **If the app gets closed mid-workout,** reopen it. Today shows **Resume workout** and picks up at the same step.
 - **Your data lives only on this phone,** in the app's storage. Deleting the home-screen app deletes its data. Use **Me → Back up now** (or the Sunday reminder on Today) to save a dated JSON file to iCloud Drive or Files. **Me → Import data** restores one, replacing everything on the phone.
+
+## Wake-up nudge (iPhone Shortcuts)
+
+Web apps can't send reliable notifications, so let the morning alarm do it. One iOS limit: Shortcuts can't open a home-screen web app. **Don't use "Open URLs"**. It opens the app's address in a Safari tab, and Safari keeps separate storage from the home-screen app, so you'd see an empty app with none of your workouts.
+
+Instead, have the alarm post a notification, then tap the Workout icon yourself:
+
+1. Open **Shortcuts** → **Automation** → **+** (New Automation).
+2. Choose **Alarm** → **Is Stopped**. Pick your weekday wake-up alarm (or **Any Alarm**).
+3. Choose **Run Immediately** (and turn off **Notify When Run**).
+4. Tap **New Blank Automation** → **Add Action** → search **Show Notification**. Set the text to something like `Workout time. Tap the Workout icon.`
+5. Tap **Done**.
+
+Keep the Workout icon on your first home screen or in the Dock so it's one tap from the notification. If a future iOS lists **Workout** under the **Open App** action, use that instead of Show Notification.
 
 ## Editing exercises
 

@@ -3,7 +3,7 @@
  * A new version installs in the background and waits. Today shows "Update ready, tap to reload",
  * and the tap sends SKIP_WAITING. Closing the app fully also lets it take over on the next launch.
  */
-const CACHE_VERSION = 'v10';
+const CACHE_VERSION = 'v11';
 const CACHE = `workout-${CACHE_VERSION}`;
 
 // Navigations (including './') are answered from the cached index.html below.
@@ -13,6 +13,7 @@ const ASSETS = [
   'db.js',
   'adapt.js',
   'track.js',
+  'habits.js',
   'app.js',
   'exercises.json',
   'manifest.json',
