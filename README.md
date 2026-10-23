@@ -2,7 +2,7 @@
 
 A personal iPhone workout app (PWA): quiet 15–22 minute home workouts, a guided player with timers, and a local log. Plain HTML, CSS, and JavaScript. No framework and no build step. All data stays on the phone.
 
-**Phase 5a (this version):** everything in Phases 1–4 (plan generator, workout player with timers, logging, per-exercise check-in and progression, the 3 → 5 day ramp, weekly weigh-in and chart, history calendar, "never miss twice" streak, 10-minute short-on-time version, morning soreness check, backup and import) plus a 5-minute "Just show up" workout, the skip tax ledger with excused days, a text to your wife at $20, a reward bank, and a Sunday weekly scorecard. See `SPEC.md` (kept local, not in the repo) for later phases.
+**Phase 5b (this version):** everything in Phases 1–5a (plan generator, workout player with timers, logging, per-exercise check-in and progression, the 3 → 5 day ramp, weekly weigh-in and chart, history calendar, "never miss twice" streak, 10-minute short-on-time version, morning soreness check, backup and import, 5-minute "Just show up", skip tax with excused days, the $20 text, reward bank, Sunday scorecard) plus the Food tab: Win / OK / Miss meal ratings, a protein tracker, the evening lunch plan, a fast-food game plan, and a meals vs. weight chart. Today adds desk breaks and a stand goal. This is the last phase in `SPEC.md` (kept local, not in the repo).
 
 ## Files
 
@@ -14,6 +14,7 @@ A personal iPhone workout app (PWA): quiet 15–22 minute home workouts, a guide
 | `adapt.js` | Check-in rules: progression, lighter days, the ramp |
 | `track.js` | Streak, calendar, and weigh-in math |
 | `habits.js` | Skip tax, reward points, and scorecard math |
+| `food.js` | Meal ratings, Win meal %, and food and desk points math |
 | `db.js` | Storage wrapper: IndexedDB, falling back to localStorage |
 | `exercises.json` | Every ladder, rung, rep range, form cue, and demo link. Edit exercises here. |
 | `manifest.json` | Home-screen install settings |
@@ -116,6 +117,15 @@ Instead, have the alarm post a notification, then tap the Workout icon yourself:
 5. Tap **Done**.
 
 Keep the Workout icon on your first home screen or in the Dock so it's one tap from the notification. If a future iOS lists **Workout** under the **Open App** action, use that instead of Show Notification.
+
+## Desk break reminders
+
+Today shows desk breaks (up to 3 a workday) with a **Moves** list. Web apps can't send reliable reminders, so use the iPhone for the nudge:
+
+- **Clock (simplest):** in **Clock** → **Alarms**, add alarms at the times you want, e.g. 10:00 AM, 1:00 PM, and 3:00 PM. Set **Repeat** to Monday–Friday, name them `Desk break`, and pick a quiet sound.
+- **Shortcuts (a banner instead of an alarm):** **Shortcuts** → **Automation** → **+** → **Time of Day**. Pick 10:00 AM, set Repeat to **Weekly** and choose Mon–Fri, then **Run Immediately**. Add the **Show Notification** action with text like `Desk break: 2 minutes. Log it in Workout.` Repeat for 1:00 PM and 3:00 PM.
+
+Tap the Workout icon, then **Did one** on Today after each break. Each one is 2 reward points.
 
 ## Editing exercises
 

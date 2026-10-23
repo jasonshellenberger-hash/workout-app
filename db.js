@@ -4,13 +4,14 @@
  */
 const DB = (() => {
   const NAME = 'workout-app';
-  const VERSION = 2; // 2: body (weigh-ins)
+  const VERSION = 3; // 2: body (weigh-ins), 3: daily (meals, protein, lunch plan, desk breaks)
   const STORES = {
     settings: { keyPath: 'key' },
     progression: { keyPath: 'ladderId' },
     workouts: { keyPath: 'id' },
     logs: { keyPath: 'id', autoIncrement: true, indexes: [['date', 'date']] },
     body: { keyPath: 'id', autoIncrement: true, indexes: [['date', 'date']] },
+    daily: { keyPath: 'date' },
   };
 
   let impl = null;

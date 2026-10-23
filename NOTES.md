@@ -196,8 +196,30 @@ New records live in the `settings` store (no IndexedDB version bump), so backup 
   - It shows workouts done / planned, the streak, skip tax owed, and points.
   - It has an 8-week chart of weekly completion % with the average line and dashed upper/lower limits (XmR: average ± 2.66 × the average week-to-week change, kept between 0 and 100). Weeks before your first log and weeks with nothing planned are left out.
   - It takes over the Sunday backup card: **Back up now** and the Last backup line (amber after 14 days) show on the scorecard unless there's been a backup in the last 6 days.
-  - History shows the latest scorecard under "Last week". Win meal % arrives with 5b.
+  - History shows the latest scorecard under "Last week". Win meal % was added in 5b.
 - **Wake-up nudge.** README → Wake-up nudge. Shortcuts can't open a home-screen web app, and "Open URLs" opens Safari, which has separate storage. So the alarm automation shows a notification instead.
+
+## Phase 5b: food and desk (v6.0.0, cache v12)
+
+IndexedDB version 3 adds a `daily` store, one record per date: `{ date, meals: { breakfast, lunch, dinner, snacks: [] }, protein, proteinAdds, lunchPlan, lunchStuck, deskBreaks, stood }`. Each meal is `{ rating: 'win' | 'ok' | 'miss', note, at, fastFood }`. Export includes it, and older backups without it import fine. Settings are schemaVersion 6. The math is in `food.js` (pure functions).
+
+- **Food tab.**
+  - **Protein:** a ring, +20 / +30 / +40 g, and Undo for the last add. The target is 150 g (Me → Food and desk).
+  - **Meals:** Breakfast, Lunch, Dinner, and any snacks, each with Win · OK · Miss. Tapping the selected rating clears it. **Note** adds a note. A snack's **Edit** can delete it.
+  - **Dock:** "Log breakfast/lunch/dinner" for the meal that fits the time (lunch from 10:30, dinner from 3:30). It opens Win / OK / Miss and goes away once that meal is rated.
+  - **Fast-food game plan:** places with a better order. Tap one to see the order. "Ordered it" logs the current meal as OK, so it's never a Miss or taxed.
+  - **Meals vs. weight:** up to 12 weeks, from the first week with a rated meal. Weekly Win meal % as bars, with weekly weigh-ins as a line (right axis). It starts in the second week.
+- **Lunch pre-commit.**
+  - Opening the app at or after 8 p.m. (setting) shows "What's lunch tomorrow?" from the top. It offers the go-to lunches (3 to start, up to 6, edited on the Food tab), "No plan, I'll wing it", or free text.
+  - Skip stops it for the night. Tapping outside only closes it, so it asks again next time. It never asks if tomorrow already has a plan. The Food tab's "Tomorrow" row sets or changes it any time.
+  - The next day, the Lunch row shows the plan. Once lunch is rated, "Did you stick to it?" Yes / No shows, except after winging it. The dock's quick log asks it as a follow-up.
+  - After 4 weeks (`lunchPromptSince`), Today asks "Keep the evening lunch prompt?" with the stuck-to-it count. Turning the prompt back on in Me restarts the 4 weeks.
+- **Points:** +5 per Win meal (snacks too) and +2 per desk break, on top of the best workout of the day (`Habits.bank` extras). They never count for the streak, the week, or progression.
+- **Miss-meal tax:** +$2 per Miss meal on the same ledger, counted as soon as it's logged, from `ledger.since`. It has its own switch, shown when the skip tax is on. The $20 text includes it. Payments now save a time (`at`), so the "You owe" line can tell which Miss meals came after a payment.
+- **Today:** a card under the week with protein (tap for Food), desk breaks "n of 3" with **Moves** and **Did one**, and a "Stood for 2+ hours" check. Desk breaks and the stand check show Mon–Fri only.
+- **Scorecard:** adds Win meals % for last week ("–" if nothing was rated).
+- **History:** a tapped day also shows a "Food and desk" line: meals, lunch plan, protein, desk breaks, stand.
+- **README:** a "Desk break reminders" section (Clock alarms or a Shortcuts Time of Day automation).
 
 ## Known issues / fix next
 
@@ -210,6 +232,9 @@ New records live in the `settings` store (no IndexedDB version bump), so backup 
 7. **The "Which ones, and why?" list can be long** after ending early, because it lists every unfinished exercise, including arm care. You can skip any of them.
 8. **Excuses after paying.** A missed day that's already been paid for can't be excused. Paid has no undo, so excuse sick days before tapping Paid.
 9. **The skip tax counts only after install.** Misses before Phase 5a, or while the tax was off, are never charged.
+10. **Changing a Miss meal after paying.** Re-rating an already-paid Miss as Win or OK lowers the charge, so the next misses are covered until the overpayment is used up.
+11. **Food is logged for today only.** There's no way to rate a past day's meals or add a forgotten desk break.
+12. **`adapt.test.js` is stale.** Its first case still uses the v1 "Too easy" rating, which the check-in redesign removed.
 
 ## Deploy steps (not done yet)
 

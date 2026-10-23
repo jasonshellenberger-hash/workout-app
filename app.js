@@ -9,7 +9,7 @@
    skip tax, points, and scorecard math in habits.js.
    ========================================================================== */
 
-const APP_VERSION = '5.0.0';
+const APP_VERSION = '6.0.0';
 
 const DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DAY_LETTER = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
@@ -24,7 +24,7 @@ const ACCENTS = [
 
 const DEFAULT_SETTINGS = {
   key: 'app',
-  schemaVersion: 5,
+  schemaVersion: 6,
   equipment: ['db5', 'db10', 'db20', 'trx', 'jband', 'loopband', 'medball6', 'chair', 'bodyweight'],
   quietMode: true,            // always on; shown locked in Settings
   workoutDays: [1, 3, 5],     // Mon / Wed / Fri
@@ -54,6 +54,23 @@ const DEFAULT_SETTINGS = {
   rewardsOn: true,
   scorecard: true,            // Sunday weekly scorecard on Today
   scorecardSeen: null,        // the Sunday "Got it" was tapped
+  // Phase 5b food and desk
+  proteinTarget: 150,         // g a day
+  lunchPrompt: true,          // "What's lunch tomorrow?" in the evening
+  lunchPromptHour: 20,        // asks when the app is opened at or after this hour
+  lunchPromptSince: null,     // the 4-week trial started (set on first run, or when turned back on)
+  lunchReviewed: false,       // the 4-week "Keep the lunch plan prompt?" was answered
+  lunchAsked: null,           // the evening the prompt was answered or skipped
+  goToLunches: [
+    { id: 'g1', name: 'Salad from home' },
+    { id: 'g2', name: 'Leftovers' },
+    { id: 'g3', name: 'Cafeteria grill plate' },
+  ],
+  fastFood: [],               // [{ id, name, order }]: the better order for each place
+  mealTax: true,              // $ per Miss meal, on the same ledger as the skip tax
+  mealTaxAmount: 2,
+  deskBreaks: true,           // up to 3 a workday, Mon–Fri
+  standGoal: true,            // "Stood 2+ hours" check-off, Mon–Fri
 };
 
 // Skip tax state. Owed is worked out from history (Habits.ledger); only payments and excuses are stored.
@@ -78,6 +95,21 @@ const POINTS_FULL = 10;      // a finished workout
 const POINTS_SMALL = 5;      // a 5-minute workout, a mobility day, or a partial with circuit sets
 const MINIMUM_CAP_SEC = 5 * 60;
 const EXCUSE_TEXT = { sick: 'Sick', travel: 'Travel' };
+const POINTS_WIN_MEAL = 5;
+const POINTS_DESK = 2;
+const DESK_MAX = 3;          // desk breaks a workday
+const MAX_GO_TO = 6;         // go-to lunches
+const MEAL_TEXT = { breakfast: 'Breakfast', lunch: 'Lunch', dinner: 'Dinner', snack: 'Snack' };
+const RATING_TEXT = { win: 'Win', ok: 'OK', miss: 'Miss' };
+// Office-friendly, no equipment, no sweat (SPEC.md → Workday movement)
+const DESK_MOVES = [
+  ['Calf raises', '20 slow reps, pause at the top'],
+  ['Squats to the chair', '10–15, sit back until you touch, stand without your hands'],
+  ['Desk push-ups', '10–15, hands on the desk edge, body in one line'],
+  ['Standing hip flexor stretch', '30 s a side, squeeze the back glute'],
+  ['Doorway chest stretch', '30 s, elbows at shoulder height'],
+  ['Shoulder rolls', '10 back, 10 forward, slow'],
+];
 
 // Starting rung and target per ladder, from SPEC.md → Starting assessment.
 // Phase 2 moves these with the check-in; Phase 1 only reads them.
@@ -647,9 +679,22 @@ async function loadHabits() {
   S.bank.since ||= today;
   if (!ledger) await saveLedger();
   if (!bank) await saveBank();
+  // First run of Phase 5b: the lunch prompt's 4-week trial starts today.
+  if (!S.settings.lunchPromptSince) { S.settings.lunchPromptSince = today; await DB.put('settings', S.settings); }
 }
 function saveLedger() { return DB.put('settings', { ...S.ledger, key: 'ledger' }); }
 function saveBank() { return DB.put('settings', { ...S.bank, key: 'bank' }); }
+
+// One `daily` record per date: meals, protein, the lunch plan, desk breaks, the stand goal.
+const emptyDay = date => ({ date, meals: { snacks: [] }, protein: 0, proteinAdds: [], lunchPlan: null, lunchStuck: null, deskBreaks: 0, stood: false });
+async function getDay(key) {
+  const saved = await DB.get('daily', key);
+  const day = { ...emptyDay(key), ...(saved || {}) };
+  day.meals = { snacks: [], ...day.meals };
+  return day;
+}
+function saveDay(day) { return DB.put('daily', day); }
+const isWorkday = key => { const dow = parseKey(key).getDay(); return dow >= 1 && dow <= 5; };
 
 // First run of Phase 3: today's days stand for all of history (there was no record before).
 async function loadSchedule() {
@@ -767,7 +812,8 @@ function logPoints(log) {
 
 async function bankStatus(logs) {
   logs ||= await DB.getAll('logs');
-  return Habits.bank({ since: S.bank.since, awards: logs.map(l => ({ date: l.date, points: logPoints(l) })), redemptions: S.bank.redemptions });
+  const extras = Food.awards(await DB.getAll('daily'), { since: S.bank.since, winPoints: POINTS_WIN_MEAL, deskPoints: POINTS_DESK });
+  return Habits.bank({ since: S.bank.since, awards: logs.map(l => ({ date: l.date, points: logPoints(l) })), extras, redemptions: S.bank.redemptions });
 }
 
 async function ledgerStatus(facts) {
@@ -775,6 +821,7 @@ async function ledgerStatus(facts) {
   return Habits.ledger({
     since: S.ledger.since, today: dateKey(), planned: isPlannedDay,
     showedUp: new Set([...f.done, ...f.partial]), amount: S.settings.skipTaxAmount, payments: S.ledger.payments,
+    mealMisses: S.settings.mealTax ? Food.misses(await DB.getAll('daily'), S.ledger.since) : [], mealAmount: S.settings.mealTaxAmount,
   });
 }
 
@@ -920,7 +967,7 @@ async function showTab(tab) {
   setDock('');
   if (tab === 'today') await renderToday();
   else if (tab === 'history') await renderHistory();
-  else if (tab === 'food') renderFood();
+  else if (tab === 'food') await renderFood();
   else if (tab === 'me') renderMe();
   // Replay the entrance transition
   const v = $(`#view-${tab}`);
@@ -1065,8 +1112,8 @@ async function renderToday() {
   const scorecard = now.getDay() === 0 && S.settings.scorecard && S.settings.scorecardSeen !== today
     ? await scorecardHtml(today, facts, { actions: true }) : '';
   $('#view-today').innerHTML = updateBanner + largeTitle('Today', fmtLongDate(now)) + scorecard + await rampCard()
-    + (scorecard ? '' : backupCard(today)) + await habitCards(facts) + hero
-    + `<div style="height:12px"></div>` + weekHtml;
+    + (scorecard ? '' : backupCard(today)) + await habitCards(facts) + await lunchReviewCard() + hero
+    + `<div style="height:12px"></div>` + weekHtml + await dayCard(today);
   setDock(dock);
 }
 
@@ -1098,6 +1145,8 @@ const money = n => `$${n}`;
 
 // Misses since the last payoff: a payment on a day covers every miss before it.
 const unpaid = (led, key) => !led.lastPaid || key >= led.lastPaid;
+// A Miss meal is paid for if it was logged before the last payment (older payments have only a date).
+const mealUnpaid = (led, m) => !led.lastPaid || (led.lastPaidAt && m.at ? m.at > led.lastPaidAt : m.date > led.lastPaid);
 // A recent missed day can still be excused (sick, travel), unless it's already been paid for.
 const canExcuse = (led, key) => unpaid(led, key) && daysSince(key) <= 14;
 
@@ -1132,16 +1181,105 @@ async function habitCards(facts) {
   }
   if (led.owed > 0) {
     const n = led.misses.filter(k => unpaid(led, k)).length;
+    const m = led.mealMisses.filter(x => mealUnpaid(led, x)).length;
+    const why = [n ? `${n} missed workout${n === 1 ? '' : 's'} at ${money(st.skipTaxAmount)}` : '',
+      m ? `${m} Miss meal${m === 1 ? '' : 's'} at ${money(st.mealTaxAmount)}` : ''].filter(Boolean).join(', ');
     html += `
       <div class="card owe-card">
         <div class="owe-head">
           <div><div class="muted">You owe</div><div class="owe-num num">${money(led.owed)}</div></div>
           <button class="btn btn-secondary owe-paid" data-action="paid">Paid</button>
         </div>
-        <p class="muted">${n ? `${n} missed workout${n === 1 ? '' : 's'} at ${money(st.skipTaxAmount)}. ` : ''}Sick or traveling? Excuse the day on the History calendar.</p>
+        <p class="muted">${why ? `${why}. ` : ''}Sick or traveling? Excuse the day on the History calendar.</p>
       </div>`;
   }
   return html;
+}
+
+/* ---------- Today: protein, desk breaks, stand goal (SPEC.md → Food features, Workday movement) ---------- */
+function proteinRing(g, target, size = 56) {
+  const r = 24, c = 2 * Math.PI * r;
+  const frac = Math.min(1, target > 0 ? g / target : 0);
+  return `<svg class="pring ${frac >= 1 ? 'full' : ''}" viewBox="0 0 56 56" width="${size}" height="${size}" aria-hidden="true">
+    <circle class="pring-track" cx="28" cy="28" r="${r}"/>
+    <circle class="pring-fill" cx="28" cy="28" r="${r}" stroke-dasharray="${c.toFixed(2)}" stroke-dashoffset="${(c * (1 - frac)).toFixed(2)}"/>
+  </svg>`;
+}
+
+async function dayCard(today) {
+  const st = S.settings;
+  const day = await getDay(today);
+  const work = isWorkday(today);
+  const desk = st.deskBreaks && work;
+  const stand = st.standGoal && work;
+  return `
+    <div class="card day-card">
+      <button class="day-protein" data-action="go-food">
+        ${proteinRing(day.protein, st.proteinTarget, 48)}
+        <div class="row-main"><div class="muted">Protein</div><div class="day-num num">${day.protein}<span class="of"> / ${st.proteinTarget} g</span></div></div>
+        ${ICONS.chevronRight}
+      </button>
+      ${desk ? `
+      <div class="day-row">
+        <div class="row-main"><div class="muted">Desk breaks</div><div class="day-num num">${day.deskBreaks}<span class="of"> of ${DESK_MAX}</span></div></div>
+        <button class="btn btn-small btn-secondary" data-action="desk-moves">Moves</button>
+        <button class="btn btn-small ${day.deskBreaks < DESK_MAX ? 'btn-primary' : 'btn-secondary'}" data-action="desk-log" ${day.deskBreaks < DESK_MAX ? '' : 'disabled'}>Did one</button>
+      </div>` : ''}
+      ${stand ? `
+      <button class="day-row day-stand ${day.stood ? 'on' : ''}" data-action="stand" aria-pressed="${day.stood}">
+        <span class="check-box">${day.stood ? ICONS.check : ''}</span>
+        <span class="row-main">Stood for 2+ hours</span>
+      </button>` : ''}
+    </div>`;
+}
+
+// After 4 weeks of the evening lunch prompt: keep it or turn it off.
+async function lunchReviewCard() {
+  const st = S.settings;
+  if (!st.lunchPrompt || st.lunchReviewed || !st.lunchPromptSince || daysSince(st.lunchPromptSince) < 28) return '';
+  const days = (await DB.getAll('daily')).filter(d => d.date >= st.lunchPromptSince);
+  const ls = Food.lunchStats(days);
+  return `
+    <div class="card ramp-card">
+      <div class="hero-kicker">Lunch plan · 4 weeks in</div>
+      <div class="ramp-title">Keep the evening lunch prompt?</div>
+      <p class="muted">${ls.planned ? `You stuck to the plan ${ls.stuck} of ${ls.planned} times.` : 'No planned lunches were checked yet.'} It's a trial: keep it if it helps.</p>
+      <div class="ramp-actions">
+        <button class="btn btn-secondary" data-action="lunch-review-off">Turn it off</button>
+        <button class="btn btn-primary" data-action="lunch-review-keep">Keep it</button>
+      </div>
+    </div>`;
+}
+
+async function logDeskBreak() {
+  const day = await getDay(dateKey());
+  if (day.deskBreaks >= DESK_MAX) return toast(`That's all ${DESK_MAX} for today`);
+  day.deskBreaks++;
+  await saveDay(day);
+  toast(`Desk break ${day.deskBreaks} of ${DESK_MAX}${S.settings.rewardsOn ? ` · +${POINTS_DESK} points` : ''}`);
+}
+
+// The office moves, about 2 minutes: pick 3, ~40 s each.
+function showDeskMoves() {
+  const root = $('#fsheet');
+  root.innerHTML = `
+    <div class="sheet-backdrop" data-f="cancel"></div>
+    <div class="wsheet">
+      <div class="ws-title">Desk break</div>
+      <div class="ws-sub">About 2 minutes. Pick any 3, roughly 40 seconds each. No sweat.</div>
+      <ul class="ex-list desk-list">${DESK_MOVES.map(([n, cue]) => `<li><span class="ex-name">${esc(n)}</span><span class="desk-cue">${esc(cue)}</span></li>`).join('')}</ul>
+      <div class="ws-actions">
+        <button type="button" class="btn btn-secondary" data-f="cancel">Close</button>
+        <button type="button" class="btn btn-primary" data-f="log">Did one</button>
+      </div>
+    </div>`;
+  root.hidden = false;
+  root.onclick = async e => {
+    const f = e.target.closest('[data-f]')?.dataset.f;
+    if (!f) return;
+    root.hidden = true; root.innerHTML = '';
+    if (f === 'log') { await logDeskBreak(); if (S.tab === 'today') renderToday(); }
+  };
 }
 
 /* ---------- Weekly scorecard: the 8 full weeks before this one ---------- */
@@ -1159,6 +1297,13 @@ async function scorecardWeeks(today, facts) {
   return weeks;
 }
 
+// Win meal % for the week starting `start` (a date key), or null if nothing was rated.
+async function weekWinPct(start) {
+  const end = Habits.addDaysKey(start, 7);
+  return Food.winPct((await DB.getAll('daily')).filter(d => d.date >= start && d.date < end));
+}
+const winText = pct => pct == null ? '–' : `${pct}%`;
+
 async function scorecardHtml(today, facts, { actions = false } = {}) {
   const weeks = await scorecardWeeks(today, facts);
   if (!weeks.length) return '';
@@ -1169,6 +1314,7 @@ async function scorecardHtml(today, facts, { actions = false } = {}) {
   const stats = [
     [last ? `${last.done}<span class="of"> / ${last.planned}</span>` : '–', 'Workouts'],
     [`${sk.count}`, 'Streak'],
+    [winText(await weekWinPct(lastStart)), 'Win meals'],
     st.skipTax ? [money((await ledgerStatus(facts)).owed), 'Skip tax'] : null,
     st.rewardsOn ? [`${(await bankStatus(facts.logs)).balance}`, 'Points'] : null,
   ].filter(Boolean);
@@ -1327,9 +1473,11 @@ async function renderHistory() {
           ${unpaid(led, S.calSel) ? `<button class="btn btn-small btn-secondary" data-action="unexcuse" data-day="${S.calSel}">Undo</button>` : ''}</div>`
       : `<div class="row"><div class="row-main"><div class="row-title">${CAL_TEXT[state]}</div>${state === 'missed' && S.settings.skipTax && S.calSel >= S.ledger.since && unpaid(led, S.calSel) ? `<div class="row-sub">${money(S.settings.skipTaxAmount)} skip tax</div>` : ''}</div>
           ${state === 'missed' && canExcuse(led, S.calSel) ? `<button class="btn btn-small btn-secondary" data-action="excuse" data-day="${S.calSel}">Excuse</button>` : ''}</div>`;
+    const foodLine = dayFoodText(await DB.get('daily', S.calSel));
     html += `<div class="section-label">${esc(fmtLongDate(parseKey(S.calSel)))}</div>` + (dayLogs.length
       ? `<div class="group">${dayLogs.map(logRow).join('')}</div>`
-      : `<div class="group">${dayRow}</div>`);
+      : `<div class="group">${dayRow}</div>`)
+      + (foodLine ? `<div class="group" style="margin-top:12px"><div class="row"><div class="row-main"><div class="row-title">Food and desk</div><div class="row-sub">${esc(foodLine)}</div></div></div></div>` : '');
   }
   const card = await scorecardHtml(today, f);
   if (card) html += `<div class="section-label">Last week</div>` + card;
@@ -1388,10 +1536,356 @@ function levelUpText(log) {
   return ups.map(c => `${exName(c.from)} → ${exName(c.to)}`).join(', ');
 }
 
-/* ---------- Food (Phase 5) ---------- */
-function renderFood() {
-  $('#view-food').innerHTML = largeTitle('Food') + `
-    <div class="card empty">${ICONS.utensils}<strong>Coming soon</strong>Meal ratings, protein, and the lunch plan arrive in a later phase.</div>`;
+/* ---------- Food (SPEC.md → Food features): every action under 10 seconds ---------- */
+const planText = plan => plan.pick === 'wing' ? 'Winging it' : plan.name;
+const hourText = h => new Date(2000, 0, 1, h).toLocaleTimeString(undefined, { hour: 'numeric' });
+
+// A meal is addressed as 'breakfast' | 'lunch' | 'dinner' | 'snack:<index>' ('snack:new' adds one).
+function mealAt(day, ref) {
+  return ref.startsWith('snack:') ? day.meals.snacks[Number(ref.slice(6))] || null : day.meals[ref] || null;
+}
+function setMeal(day, ref, meal) {
+  if (ref.startsWith('snack:')) {
+    const i = Number(ref.slice(6));
+    if (meal) day.meals.snacks[i] = meal; else day.meals.snacks.splice(i, 1);
+  } else if (meal) day.meals[ref] = meal;
+  else delete day.meals[ref];
+}
+
+// Rate a meal today. Tapping the rating it already has clears it.
+async function rateMeal(ref, rating, { fastFood = null } = {}) {
+  const day = await getDay(dateKey());
+  if (ref === 'snack:new') ref = `snack:${day.meals.snacks.length}`;
+  const cur = mealAt(day, ref);
+  if (cur?.rating === rating && !fastFood) {
+    setMeal(day, ref, cur.note && !ref.startsWith('snack:') ? { ...cur, rating: null, fastFood: null } : null);
+    await saveDay(day);
+    return;
+  }
+  setMeal(day, ref, { ...(cur || {}), rating, at: new Date().toISOString(), fastFood: fastFood || (rating === 'ok' ? cur?.fastFood || null : null) });
+  await saveDay(day);
+  const st = S.settings;
+  if (fastFood) toast(`${fastFood}: logged as OK`);
+  else if (rating === 'win' && st.rewardsOn) toast(`Win · +${POINTS_WIN_MEAL} points`);
+  else if (rating === 'miss' && st.skipTax && st.mealTax) toast(`Miss · ${money(st.mealTaxAmount)} on the ledger`);
+}
+
+async function setLunchStuck(v) {
+  const day = await getDay(dateKey());
+  day.lunchStuck = day.lunchStuck === v ? null : v;
+  await saveDay(day);
+}
+
+// One-tap log from the dock (the meal for this time of day) or Add a snack. Lunch with a plan asks if you stuck to it.
+async function quickMeal(slot) {
+  const rating = await actionSheet({ title: `${MEAL_TEXT[slot]}?`, actions: ['win', 'ok', 'miss'].map(r => ({ label: RATING_TEXT[r], value: r })) });
+  if (!rating) return;
+  await rateMeal(slot === 'snack' ? 'snack:new' : slot, rating);
+  const day = await getDay(dateKey());
+  if (slot === 'lunch' && day.lunchPlan && day.lunchPlan.pick !== 'wing' && day.lunchStuck == null) {
+    const stuck = await actionSheet({ title: `Did you stick to the plan (${day.lunchPlan.name})?`, actions: [{ label: 'Yes', value: 'yes' }, { label: 'No', value: 'no' }] });
+    if (stuck) await setLunchStuck(stuck === 'yes');
+  }
+}
+
+async function editMealNote(ref) {
+  const day = await getDay(dateKey());
+  const cur = mealAt(day, ref);
+  const snack = ref.startsWith('snack:');
+  const v = await formSheet({
+    title: snack ? 'Snack note' : `${MEAL_TEXT[ref]} note`,
+    fields: [{ name: 'note', label: 'Note (optional)', value: cur?.note, placeholder: 'Grilled chicken, skipped the fries' }],
+    extra: snack ? 'Delete snack' : cur?.rating ? `Clear ${MEAL_TEXT[ref].toLowerCase()}` : null,
+  });
+  if (!v) return;
+  if (v.extra) setMeal(day, ref, null);
+  else setMeal(day, ref, { ...(cur || { rating: null }), note: v.note });
+  await saveDay(day);
+}
+
+async function addProtein(g) {
+  const day = await getDay(dateKey());
+  day.protein += g;
+  day.proteinAdds.push(g);
+  await saveDay(day);
+}
+async function undoProtein() {
+  const day = await getDay(dateKey());
+  const g = day.proteinAdds.pop();
+  if (g) day.protein = Math.max(0, day.protein - g);
+  await saveDay(day);
+}
+
+function mealRow(ref, meal, day) {
+  const snack = ref.startsWith('snack:');
+  const title = snack ? 'Snack' : MEAL_TEXT[ref];
+  const plan = ref === 'lunch' ? day.lunchPlan : null;
+  const sub = [plan ? `Plan: ${planText(plan)}` : '', meal?.fastFood ? `${meal.fastFood}, from the game plan` : '', meal?.note || ''].filter(Boolean).join(' · ');
+  const askStuck = plan && plan.pick !== 'wing' && meal?.rating;
+  return `
+    <div class="meal">
+      <div class="meal-head">
+        <div class="row-main"><div class="meal-name">${title}</div>${sub ? `<div class="row-sub">${esc(sub)}</div>` : ''}</div>
+        <button class="meal-note-btn" data-meal-note="${ref}">${snack ? 'Edit' : meal?.note ? 'Edit note' : 'Note'}</button>
+      </div>
+      <div class="ci-chips">${['win', 'ok', 'miss'].map(r => `
+        <button class="ci-chip rate-${r} ${meal?.rating === r ? 'on' : ''}" data-meal="${ref}" data-rating="${r}">${RATING_TEXT[r]}</button>`).join('')}
+      </div>
+      ${askStuck ? `
+      <div class="meal-stuck"><span>Did you stick to it?</span>
+        <div class="seg">${[[true, 'Yes'], [false, 'No']].map(([v, l]) => `<button class="seg-btn ${day.lunchStuck === v ? 'on' : ''}" data-stuck="${v}">${l}</button>`).join('')}</div>
+      </div>` : ''}
+    </div>`;
+}
+
+async function renderFood() {
+  const now = new Date();
+  const today = dateKey(now);
+  const st = S.settings;
+  const day = await getDay(today);
+  const tomorrow = await getDay(Habits.addDaysKey(today, 1));
+  const left = st.proteinTarget - day.protein;
+  const meals = [...Food.MEALS.map(m => mealRow(m, day.meals[m], day)), ...day.meals.snacks.map((m, i) => mealRow(`snack:${i}`, m, day))].join('');
+  const html = largeTitle('Food', fmtLongDate(now)) + `
+    <div class="card protein-card">
+      <div class="protein-top">
+        ${proteinRing(day.protein, st.proteinTarget, 88)}
+        <div class="row-main">
+          <div class="muted">Protein today</div>
+          <div class="body-num num">${day.protein}<span class="unit"> / ${st.proteinTarget} g</span></div>
+          <div class="muted">${left > 0 ? `${left} g to go` : 'Target hit'}</div>
+        </div>
+      </div>
+      <div class="protein-btns">${[20, 30, 40].map(g => `<button class="btn btn-secondary" data-action="protein" data-g="${g}">+${g} g</button>`).join('')}</div>
+      ${day.proteinAdds.length ? `<button class="text-btn muted-link protein-undo" data-action="protein-undo">Undo +${day.proteinAdds[day.proteinAdds.length - 1]} g</button>` : ''}
+    </div>
+
+    <div class="section-label">Meals</div>
+    <div class="card meals-card">
+      ${meals}
+      <button class="row btn-row meal-add" data-action="snack-add">${ICONS.plus}<span>Add a snack</span></button>
+    </div>
+    <div class="section-foot">Win, OK, or Miss: no calorie counting.${st.rewardsOn ? ` A Win is ${POINTS_WIN_MEAL} points.` : ''}${st.skipTax && st.mealTax ? ` A Miss adds ${money(st.mealTaxAmount)} to the skip tax.` : ''}</div>
+
+    <div class="section-label">Lunch plan</div>
+    <div class="group">
+      <button class="row entry-row" data-action="lunch-plan">
+        <div class="row-main"><div class="row-title">Tomorrow</div><div class="row-sub">${tomorrow.lunchPlan ? esc(planText(tomorrow.lunchPlan)) : 'Not planned yet'}</div></div>
+        <span class="row-value">${tomorrow.lunchPlan ? 'Change' : 'Plan it'}</span>
+      </button>
+      ${st.goToLunches.map(g => `
+      <button class="row entry-row" data-golunch="${esc(g.id)}"><div class="row-main"><div class="row-title">${esc(g.name)}</div></div></button>`).join('')}
+      ${st.goToLunches.length < MAX_GO_TO ? `<button class="row btn-row" data-action="golunch-add">${ICONS.plus}<span>Add a go-to lunch</span></button>` : ''}
+    </div>
+    <div class="section-foot">Go-to lunches are the one-tap picks${st.lunchPrompt ? ` in the evening prompt (after ${esc(hourText(st.lunchPromptHour))})` : ''}. Tap one to change or delete it.</div>
+
+    <div class="section-label">Fast-food game plan</div>
+    <div class="group">
+      ${st.fastFood.map(f => `
+      <button class="row entry-row" data-ff="${esc(f.id)}"><div class="row-main"><div class="row-title">${esc(f.name)}</div><div class="row-sub">${esc(f.order)}</div></div></button>`).join('')}
+      <button class="row btn-row" data-action="ff-add">${ICONS.plus}<span>Add a place</span></button>
+    </div>
+    <div class="section-foot">Stopping anyway? Tap the place to see your order. Ordering from the plan counts as OK, not a Miss.</div>
+    ${await mealsWeightHtml(now)}`;
+  $('#view-food').innerHTML = html;
+  const slot = Food.mealForTime(now);
+  setDock(day.meals[slot]?.rating ? '' : `<button class="btn btn-primary btn-xl" data-action="meal-quick" data-slot="${slot}">Log ${slot}</button>`);
+}
+
+/* ---------- Meals vs. weight: weekly Win meal % as bars, weekly weigh-ins as a line ---------- */
+async function mealsWeightHtml(now) {
+  const days = await DB.getAll('daily');
+  const first = days.filter(d => Food.rated(d).length).map(d => d.date).sort()[0];
+  if (!first) return '';
+  const weights = new Map(Track.weeklySeries(await DB.getAll('body')).map(p => [p.week, p.weightLb]));
+  const thisWeek = weekStart(now);
+  const weeks = [];
+  for (let n = 11; n >= 0; n--) {
+    const start = dateKey(addDays(thisWeek, -7 * n));
+    if (start < Track.weekStartKey(first)) continue;
+    const end = Habits.addDaysKey(start, 7);
+    weeks.push({ start, pct: Food.winPct(days.filter(d => d.date >= start && d.date < end)), lb: weights.get(start) ?? null });
+  }
+  return `
+    <div class="section-label">Meals vs. weight</div>
+    <div class="card">${weeks.length >= 2 ? mealsWeightChart(weeks)
+      : `<p class="muted" style="margin:0">Win meals this week: <strong style="color:var(--text)">${winText(weeks[0].pct)}</strong>. The chart starts next week.</p>`}</div>`;
+}
+
+function mealsWeightChart(weeks) {
+  const W = 320, H = 170, L = 34, R = 40, T = 8, B = 22;
+  const n = weeks.length;
+  const slot = (W - L - R) / n;
+  const x = i => L + slot * (i + 0.5);
+  const yp = v => T + (100 - v) * (H - T - B) / 100;
+  const lbs = weeks.map(w => w.lb).filter(v => v != null);
+  let lo = Math.floor(Math.min(...lbs) - 1), hi = Math.ceil(Math.max(...lbs) + 1);
+  if (hi - lo < 4) { const mid = (hi + lo) / 2; lo = Math.floor(mid - 2); hi = Math.ceil(mid + 2); }
+  const yw = v => T + (hi - v) * (H - T - B) / (hi - lo);
+  const grid = [0, 50, 100].map(v => `<line class="ch-grid" x1="${L}" x2="${W - R}" y1="${yp(v)}" y2="${yp(v)}"/><text class="ch-ylab" x="${L - 6}" y="${yp(v) + 4}">${v}%</text>`).join('');
+  const rlab = lbs.length ? [hi, lo].map(v => `<text class="ch-rlab" x="${W - R + 6}" y="${yw(v) + 4}">${v}</text>`).join('') : '';
+  const bw = Math.min(18, slot * 0.6);
+  const bars = weeks.map((w, i) => w.pct == null ? '' : `<rect class="ch-bar" x="${(x(i) - bw / 2).toFixed(1)}" y="${yp(w.pct).toFixed(1)}" width="${bw.toFixed(1)}" height="${(yp(0) - yp(w.pct)).toFixed(1)}" rx="3"/>`).join('');
+  let line = '', pen = 'M';
+  weeks.forEach((w, i) => { if (w.lb == null) { pen = 'M'; return; } line += `${pen}${x(i).toFixed(1)} ${yw(w.lb).toFixed(1)} `; pen = 'L'; });
+  const dots = weeks.map((w, i) => w.lb == null ? '' : `<circle class="ch-wdot" cx="${x(i).toFixed(1)}" cy="${yw(w.lb).toFixed(1)}" r="3.5"/>`).join('');
+  const xlabs = [0, n - 1].map(i => `<text class="ch-xlab" x="${x(i)}" y="${H - 5}" text-anchor="${i ? 'end' : 'start'}">${esc(shortDate(weeks[i].start))}</text>`).join('');
+  const last = weeks[n - 1];
+  return `
+    <div class="chart" style="margin-top:0">
+      <div class="chart-legend"><span><i class="lg-bar"></i>Win meal %</span><span><i class="lg-line"></i>Weight (lb)</span></div>
+      <div class="chart-tip num">This week: <strong>${winText(last.pct)}</strong> Win meals${last.lb != null ? ` · <strong>${fmtLb(last.lb)} lb</strong>` : ''}</div>
+      <svg class="ch" viewBox="0 0 ${W} ${H}" role="img" aria-label="Weekly Win meal percent and weekly weight, last ${n} weeks">
+        ${grid}${rlab}${xlabs}${bars}
+        ${line ? `<path class="ch-avg" d="${line.trim()}"/>` : ''}${dots}
+      </svg>
+      ${lbs.length ? '' : '<p class="muted body-wait">Weekly weigh-ins (Me → Body) show up here as a line.</p>'}
+    </div>`;
+}
+
+/* ---------- Lunch pre-commit: "What's lunch tomorrow?" ---------- */
+async function openLunchSheet({ prompted = false } = {}) {
+  const st = S.settings;
+  const key = Habits.addDaysKey(dateKey(), 1);
+  const plan = (await getDay(key)).lunchPlan;
+  const root = $('#fsheet');
+  root.innerHTML = `
+    <div class="sheet-backdrop" data-l="dismiss"></div>
+    <form class="wsheet" autocomplete="off">
+      <div class="ws-title">What's lunch tomorrow?</div>
+      <div class="ws-sub">One tap. Winging it is fine too.</div>
+      <div class="lunch-list">
+        ${st.goToLunches.map(g => `<button type="button" class="ci-choice ${plan?.pick === g.id ? 'on' : ''}" data-l="pick" data-id="${esc(g.id)}">${esc(g.name)}</button>`).join('')}
+        <button type="button" class="ci-choice lunch-wing ${plan?.pick === 'wing' ? 'on' : ''}" data-l="wing">No plan, I'll wing it</button>
+      </div>
+      <label class="fs-field"><span>Something else (optional)</span><input name="text" type="text" enterkeyhint="done" placeholder="Turkey wrap from home" value="${esc(plan?.pick === 'text' ? plan.name : '')}"></label>
+      <div class="ws-hint error fs-error"></div>
+      <div class="ws-actions">
+        <button type="button" class="btn btn-secondary" data-l="skip">${prompted ? 'Skip' : 'Cancel'}</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>`;
+  root.hidden = false;
+  const form = root.querySelector('form');
+  return new Promise(resolve => {
+    const finish = async (newPlan, answered) => {
+      document.activeElement?.blur();
+      root.hidden = true; root.innerHTML = '';
+      if (newPlan) {
+        const d = await getDay(key);
+        if (d.lunchPlan?.pick !== newPlan.pick || d.lunchPlan?.name !== newPlan.name) d.lunchStuck = null;
+        d.lunchPlan = newPlan;
+        await saveDay(d);
+        toast(newPlan.pick === 'wing' ? 'Winging it. No penalty.' : `Lunch tomorrow: ${newPlan.name}`);
+      }
+      // Written directly: saveSettings would rebuild today's plan, which this has no reason to touch.
+      if (answered && prompted) { st.lunchAsked = dateKey(); await DB.put('settings', st); }
+      resolve(newPlan);
+    };
+    root.onclick = e => {
+      const btn = e.target.closest('[data-l]');
+      const l = btn?.dataset.l;
+      if (l === 'dismiss') finish(null, false); // backdrop: not a skip, so it can ask again next time
+      else if (l === 'skip') finish(null, true);
+      else if (l === 'wing') finish({ pick: 'wing' }, true);
+      else if (l === 'pick') {
+        const g = st.goToLunches.find(x => x.id === btn.dataset.id);
+        if (g) finish({ pick: g.id, name: g.name }, true);
+      }
+    };
+    form.onsubmit = e => {
+      e.preventDefault();
+      const text = form.elements.text.value.trim();
+      if (!text) { root.querySelector('.fs-error').textContent = 'Tap one above, or type it in'; return; }
+      finish({ pick: 'text', name: text }, true);
+    };
+  });
+}
+
+// Evenings, once: from the prompt hour until you answer or tap Skip. Never while something else is on screen.
+async function maybeAskLunch() {
+  const st = S.settings;
+  const now = new Date();
+  if (!st.lunchPrompt || now.getHours() < st.lunchPromptHour || st.lunchAsked === dateKey(now)) return;
+  const busy = P.active || ['#checkin', '#complete', '#levelup', '#sheet-root', '#wsheet', '#fsheet'].some(sel => !$(sel).hidden);
+  if (busy) return;
+  if ((await getDay(Habits.addDaysKey(dateKey(now), 1))).lunchPlan) return;
+  await openLunchSheet({ prompted: true });
+  if (S.tab === 'food') renderFood();
+}
+
+async function editGoToLunch(id) {
+  const st = S.settings;
+  const g = id ? st.goToLunches.find(x => x.id === id) : null;
+  const v = await formSheet({
+    title: g ? 'Edit go-to lunch' : 'Add a go-to lunch',
+    sub: 'Easy, already-decided options. Three to six is plenty.',
+    fields: [{ name: 'name', label: 'Lunch', value: g?.name, placeholder: 'Chicken and rice from home' }],
+    extra: g ? 'Delete' : null,
+    validate: v => !v.name ? 'Give it a name' : null,
+  });
+  if (!v) return;
+  if (v.extra) st.goToLunches = st.goToLunches.filter(x => x.id !== id);
+  else if (g) g.name = v.name;
+  else st.goToLunches.push({ id: `g${Date.now().toString(36)}`, name: v.name });
+  await DB.put('settings', st);
+}
+
+async function editFastFood(id) {
+  const st = S.settings;
+  const f = id ? st.fastFood.find(x => x.id === id) : null;
+  const v = await formSheet({
+    title: f ? 'Edit place' : 'Add a place',
+    sub: "Decide the better order now, while you're not hungry.",
+    fields: [
+      { name: 'name', label: 'Place', value: f?.name, placeholder: 'Chick-fil-A' },
+      { name: 'order', label: 'Your order', value: f?.order, type: 'textarea' },
+    ],
+    extra: f ? 'Delete place' : null,
+    validate: v => !v.name ? 'Name the place' : !v.order ? 'Write the order' : null,
+  });
+  if (!v) return;
+  if (v.extra) st.fastFood = st.fastFood.filter(x => x.id !== id);
+  else if (f) Object.assign(f, { name: v.name, order: v.order });
+  else st.fastFood.push({ id: `f${Date.now().toString(36)}`, name: v.name, order: v.order });
+  await DB.put('settings', st);
+}
+
+// A stop happens anyway: show the saved order, then log the meal for this time of day as OK.
+async function showFastFood(id) {
+  const f = S.settings.fastFood.find(x => x.id === id);
+  if (!f) return;
+  const slot = Food.mealForTime(new Date());
+  const choice = await actionSheet({
+    title: `${f.name}: ${f.order}`,
+    actions: [{ label: `Ordered it: ${MEAL_TEXT[slot].toLowerCase()} is OK`, value: 'log' }, { label: 'Edit or delete', value: 'edit' }],
+  });
+  if (choice === 'log') await rateMeal(slot, 'ok', { fastFood: f.name });
+  else if (choice === 'edit') await editFastFood(id);
+}
+
+async function onFoodClick(e) {
+  const rate = e.target.closest('[data-meal]');
+  if (rate) { await rateMeal(rate.dataset.meal, rate.dataset.rating); return renderFood(); }
+  const note = e.target.closest('[data-meal-note]');
+  if (note) { await editMealNote(note.dataset.mealNote); return renderFood(); }
+  const stuck = e.target.closest('[data-stuck]');
+  if (stuck) { await setLunchStuck(stuck.dataset.stuck === 'true'); return renderFood(); }
+  const ff = e.target.closest('[data-ff]');
+  if (ff) { await showFastFood(ff.dataset.ff); return renderFood(); }
+  const gl = e.target.closest('[data-golunch]');
+  if (gl) { await editGoToLunch(gl.dataset.golunch); return renderFood(); }
+}
+
+// History: one line for a day's food and desk, or '' if nothing was logged.
+function dayFoodText(d) {
+  if (!d) return '';
+  const meals = Food.MEALS.filter(m => d.meals?.[m]?.rating).map(m => `${MEAL_TEXT[m]} ${RATING_TEXT[d.meals[m].rating]}`);
+  const snacks = (d.meals?.snacks || []).filter(m => m.rating);
+  if (snacks.length) meals.push(`${snacks.length} snack${snacks.length === 1 ? '' : 's'} (${snacks.map(m => RATING_TEXT[m.rating]).join(', ')})`);
+  const plan = d.lunchPlan ? `Lunch plan: ${planText(d.lunchPlan)}${d.lunchStuck === true ? ', stuck to it' : d.lunchStuck === false ? ", didn't" : ''}` : '';
+  return [...meals, plan, d.protein ? `${d.protein} g protein` : '', d.deskBreaks ? `${d.deskBreaks} desk break${d.deskBreaks === 1 ? '' : 's'}` : '', d.stood ? 'Stood 2+ hours' : '']
+    .filter(Boolean).join(' · ');
 }
 
 /* ---------- Me → Body: weekly weigh-ins (SPEC.md → Weight tracking) ---------- */
@@ -1563,7 +2057,7 @@ async function renderMe() {
     const sub = [`${ex.name}${l.id === 'armCare' ? '' : ` · rung ${idx + 1} of ${l.rungs.length}`}`, ...hidden].join(' · ');
     return `<div class="row"><div class="row-main"><div class="row-title">${esc(l.pattern)}</div><div class="row-sub">${esc(sub)}</div></div><span class="row-value num">${esc(l.id === 'conditioning' ? '30s on' : targetText(item))}</span></div>`;
   }).join('');
-  const html = largeTitle('Me') + await bodyHtml() + await rewardsHtml() + habitsSettingsHtml() + `
+  const html = largeTitle('Me') + await bodyHtml() + await rewardsHtml() + habitsSettingsHtml() + foodSettingsHtml() + `
     <div class="section-label">Workout days</div>
     <div class="group">
       <div class="days">
@@ -1648,7 +2142,7 @@ async function rewardsHtml() {
     <div class="section-label">Rewards</div>
     <div class="card bank-card">
       <div class="body-num num">${bal}<span class="unit"> points</span></div>
-      <div class="muted">${POINTS_FULL} per workout, ${POINTS_SMALL} for a 5-minute or mobility day</div>
+      <div class="muted">${POINTS_FULL} per workout, ${POINTS_SMALL} for a 5-minute or mobility day, ${POINTS_WIN_MEAL} per Win meal, ${POINTS_DESK} per desk break</div>
     </div>
     <div class="group" style="margin-top:12px">
       ${rewards.map(r => `
@@ -1675,6 +2169,43 @@ function habitsSettingsHtml() {
       ${switchRow('Sunday scorecard', 'scorecard', { sub: 'Last week at a glance on Sunday mornings' })}
     </div>
     <div class="section-foot">Turning the skip tax back on starts a fresh ledger at $0.</div>`;
+}
+
+/* ---------- Me → Food and desk ---------- */
+function foodSettingsHtml() {
+  const st = S.settings;
+  return `
+    <div class="section-label">Food and desk</div>
+    <div class="group">
+      <div class="row"><div class="row-main"><div class="row-title">Protein target</div></div><span class="row-value num">${st.proteinTarget} g a day</span></div>
+      ${switchRow('Lunch plan prompt', 'lunchPrompt', { sub: `"What's lunch tomorrow?" after ${hourText(st.lunchPromptHour)}` })}
+      ${st.skipTax ? switchRow('Miss-meal tax', 'mealTax', { sub: `${money(st.mealTaxAmount)} per Miss meal, on the skip tax ledger` }) : ''}
+      ${switchRow('Desk breaks', 'deskBreaks', { sub: `Up to ${DESK_MAX} a workday on Today${st.rewardsOn ? `, ${POINTS_DESK} points each` : ''}` })}
+      ${switchRow('Stand goal', 'standGoal', { sub: 'Check off "Stood for 2+ hours" on workdays' })}
+      <button class="row btn-row" data-action="food-settings">${ICONS.utensils}<span>Protein, prompt time, meal tax</span></button>
+    </div>
+    <div class="section-foot">Desk break reminders: the README shows how to set them up with Clock or Shortcuts.</div>`;
+}
+
+async function editFoodSettings() {
+  const st = S.settings;
+  const v = await formSheet({
+    title: 'Food settings',
+    fields: [
+      { name: 'protein', label: 'Protein target (g a day)', value: st.proteinTarget, type: 'number' },
+      { name: 'hour', label: 'Lunch prompt after (hour, 24-hour clock)', value: st.lunchPromptHour, type: 'number' },
+      { name: 'tax', label: 'Per Miss meal ($)', value: st.mealTaxAmount, type: 'number' },
+    ],
+    validate: v => !wholeIn(v.protein, 20, 400) ? 'Protein: 20 to 400 g'
+      : !wholeIn(v.hour, 12, 23) ? 'Lunch prompt: an hour from 12 to 23 (20 is 8 p.m.)'
+      : !wholeIn(v.tax, 1, 50) ? 'Per Miss meal: $1 to $50' : null,
+  });
+  if (!v) return;
+  // Written directly: saveSettings would rebuild today's plan, which these have no reason to touch.
+  Object.assign(st, { proteinTarget: Number(v.protein), lunchPromptHour: Number(v.hour), mealTaxAmount: Number(v.tax) });
+  await DB.put('settings', st);
+  toast('Saved');
+  renderMe();
 }
 
 // A small form, anchored to the top so the keyboard never covers it. Resolves to the values, { extra: true }, or null.
@@ -1872,6 +2403,7 @@ async function onMeChange(e) {
       Object.assign(S.ledger, { since: dateKey(), payments: [], noticesSent: 0, noticeOpen: false });
       await saveLedger();
     }
+    if (key === 'lunchPrompt' && input.checked) Object.assign(S.settings, { lunchPromptSince: dateKey(), lunchReviewed: false });
     await saveSettings({ [key]: input.checked });
     if (['flash', 'skipTax', 'rewardsOn'].includes(key)) renderMe(); // show or hide the rows that depend on it
   } else if (input.dataset.equip) {
@@ -2775,7 +3307,7 @@ function bindEvents() {
       if (!owed) return renderToday();
       const choice = await actionSheet({ title: `Mark ${money(owed)} as paid? The ledger goes back to $0.`, actions: [{ label: 'Paid', value: 'paid' }] });
       if (choice !== 'paid') return;
-      S.ledger.payments.push({ date: dateKey(), amount: owed });
+      S.ledger.payments.push({ date: dateKey(), at: new Date().toISOString(), amount: owed });
       Object.assign(S.ledger, { noticesSent: 0, noticeOpen: false });
       await saveLedger();
       toast('Paid. Clean slate.');
@@ -2803,6 +3335,47 @@ function bindEvents() {
       setSoreness(e.target.closest('[data-sore]').dataset.sore);
     } else if (act === 'unsore') {
       undoSoreness();
+    } else if (act === 'go-food') {
+      showTab('food');
+    } else if (act === 'protein') {
+      await addProtein(Number(e.target.closest('[data-g]').dataset.g));
+      renderFood();
+    } else if (act === 'protein-undo') {
+      await undoProtein();
+      renderFood();
+    } else if (act === 'meal-quick') {
+      await quickMeal(e.target.closest('[data-slot]').dataset.slot);
+      renderFood();
+    } else if (act === 'snack-add') {
+      await quickMeal('snack');
+      renderFood();
+    } else if (act === 'lunch-plan') {
+      await openLunchSheet();
+      renderFood();
+    } else if (act === 'golunch-add') {
+      await editGoToLunch(null);
+      renderFood();
+    } else if (act === 'ff-add') {
+      await editFastFood(null);
+      renderFood();
+    } else if (act === 'desk-log') {
+      await logDeskBreak();
+      renderToday();
+    } else if (act === 'desk-moves') {
+      showDeskMoves();
+    } else if (act === 'stand') {
+      const day = await getDay(dateKey());
+      day.stood = !day.stood;
+      await saveDay(day);
+      renderToday();
+    } else if (act === 'lunch-review-keep' || act === 'lunch-review-off') {
+      S.settings.lunchReviewed = true;
+      if (act === 'lunch-review-off') S.settings.lunchPrompt = false;
+      await DB.put('settings', S.settings);
+      toast(act === 'lunch-review-off' ? 'Lunch prompt off. Turn it back on in Me.' : 'Keeping the lunch prompt');
+      renderToday();
+    } else if (act === 'food-settings') {
+      editFoodSettings();
     } else if (act === 'test-cue') {
       Sound.unlock();
       setTimeout(() => cue('go'), 50);
@@ -2814,6 +3387,7 @@ function bindEvents() {
   $('#view-me').addEventListener('click', onChartPoint);
   $('#view-me').addEventListener('pointermove', onChartPoint);
   $('#view-history').addEventListener('click', onHistoryClick);
+  $('#view-food').addEventListener('click', onFoodClick);
   $('#wsheet-form').addEventListener('submit', e => { e.preventDefault(); Weigh.save(); });
   $('#wsheet').addEventListener('click', e => {
     const w = e.target.closest('[data-w]')?.dataset.w;
@@ -2861,7 +3435,7 @@ function bindEvents() {
       return;
     }
     if (S.todayKey && S.todayKey !== dateKey() && S.tab === 'today') renderToday(); // the app was left open overnight
-    maybeAskWeighIn();
+    maybeAskWeighIn().then(maybeAskLunch);
   });
 }
 
@@ -2877,7 +3451,7 @@ async function boot() {
   await finalizeStaleSession();
   bindEvents();
   await showTab('today');
-  maybeAskWeighIn();
+  maybeAskWeighIn().then(maybeAskLunch);
 
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     Update.register().catch(err => console.warn('SW registration failed', err));

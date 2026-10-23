@@ -12,20 +12,23 @@ const Habits = (() => {
   /*
    * Skip tax. Every planned day from `since` through yesterday with no show-up is a miss.
    * Excused days aren't planned, so planned() already leaves them out. Today never counts: it isn't over.
-   * input: { since, today, planned(key), showedUp: Set<dateKey>, amount, payments: [{ date, amount }] }
-   * returns { misses: [dateKey], charged, paid, owed, lastPaid }
+   * Miss meals (Phase 5b) cost mealAmount each, from `since` on, counted as soon as they're logged.
+   * input: { since, today, planned(key), showedUp: Set<dateKey>, amount, payments: [{ date, at, amount }],
+   *          mealMisses: [{ date, at }], mealAmount }
+   * returns { misses: [dateKey], mealMisses, charged, paid, owed, lastPaid, lastPaidAt }
    */
-  function ledger({ since, today, planned, showedUp, amount, payments = [] }) {
+  function ledger({ since, today, planned, showedUp, amount, payments = [], mealMisses = [], mealAmount = 0 }) {
     const misses = [];
     if (since) {
       for (let key = since; key < today; key = addDaysKey(key, 1)) {
         if (planned(key) && !showedUp.has(key)) misses.push(key);
       }
     }
-    const charged = misses.length * amount;
+    const meals = mealMisses.filter(m => !since || m.date >= since);
+    const charged = misses.length * amount + meals.length * mealAmount;
     const paid = payments.reduce((s, p) => s + (p.amount || 0), 0);
-    const lastPaid = payments.map(p => p.date).sort().pop() || null;
-    return { misses, charged, paid, owed: Math.max(0, charged - paid), lastPaid };
+    const last = [...payments].sort((a, b) => (a.at || a.date).localeCompare(b.at || b.date)).pop();
+    return { misses, mealMisses: meals, charged, paid, owed: Math.max(0, charged - paid), lastPaid: last?.date || null, lastPaidAt: last?.at || null };
   }
 
   // One notice per threshold crossed since the last payoff. sent: notices already sent since then.
@@ -41,16 +44,17 @@ const Habits = (() => {
 
   /*
    * Reward bank. awards: [{ date, points }], one or more per day; only the best one each day counts,
-   * from `since` on. Phase 5b adds Win meals and desk breaks as extra sources on top.
+   * from `since` on. extras (Win meals, desk breaks) all count, on top of that.
    * returns { earned, spent, balance }
    */
-  function bank({ since, awards, redemptions = [] }) {
+  function bank({ since, awards, extras = [], redemptions = [] }) {
     const best = new Map();
     for (const a of awards) {
       if (since && a.date < since) continue;
       best.set(a.date, Math.max(best.get(a.date) || 0, a.points));
     }
-    const earned = [...best.values()].reduce((s, n) => s + n, 0);
+    const bonus = extras.filter(a => !since || a.date >= since).reduce((s, a) => s + a.points, 0);
+    const earned = [...best.values()].reduce((s, n) => s + n, 0) + bonus;
     const spent = redemptions.reduce((s, r) => s + (r.cost || 0), 0);
     return { earned, spent, balance: earned - spent };
   }
