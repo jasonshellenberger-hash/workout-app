@@ -9,7 +9,7 @@
    skip tax, points, and scorecard math in habits.js.
    ========================================================================== */
 
-const APP_VERSION = '6.0.0';
+const APP_VERSION = '6.1.0';
 
 const DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DAY_LETTER = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
@@ -24,7 +24,7 @@ const ACCENTS = [
 
 const DEFAULT_SETTINGS = {
   key: 'app',
-  schemaVersion: 6,
+  schemaVersion: 7,
   equipment: ['db5', 'db10', 'db20', 'trx', 'jband', 'loopband', 'medball6', 'chair', 'bodyweight'],
   quietMode: true,            // always on; shown locked in Settings
   workoutDays: [1, 3, 5],     // Mon / Wed / Fri
@@ -55,7 +55,12 @@ const DEFAULT_SETTINGS = {
   scorecard: true,            // Sunday weekly scorecard on Today
   scorecardSeen: null,        // the Sunday "Got it" was tapped
   // Phase 5b food and desk
-  proteinTarget: 150,         // g a day
+  proteinTarget: 135,         // g a day: the goal mode's default (GOAL_MODES), editable in Food settings
+  goalMode: 'lose',           // 'lose' | 'maintain' | 'build': food guidance only, workouts are the same
+  goalSince: null,            // the day the current mode started (set on first run); the checkpoint counts from here
+  goalCheckWeeks: 12,         // weeks to the next checkpoint: 12, or 4 after "Maintain a few weeks"
+  goalPrev: null,             // the mode before a maintain break, offered as "Back to …"
+  lossNoteSeen: null,         // the week (Sunday key) the "Losing fast" note was dismissed
   lunchPrompt: true,          // "What's lunch tomorrow?" in the evening
   lunchPromptHour: 20,        // asks when the app is opened at or after this hour
   lunchPromptSince: null,     // the 4-week trial started (set on first run, or when turned back on)
@@ -101,6 +106,19 @@ const DESK_MAX = 3;          // desk breaks a workday
 const MAX_GO_TO = 6;         // go-to lunches
 const MEAL_TEXT = { breakfast: 'Breakfast', lunch: 'Lunch', dinner: 'Dinner', snack: 'Snack' };
 const RATING_TEXT = { win: 'Win', ok: 'OK', miss: 'Miss' };
+// SPEC.md → Goal mode. Only protein and the Win meal hint change; the plan generator never reads the mode.
+const GOAL_MODES = {
+  lose: { name: 'Lose fat', protein: 135, hint: 'Win = protein + vegetables, modest carbs' },
+  maintain: { name: 'Maintain', protein: 135, hint: 'Win = a balanced plate with protein' },
+  build: { name: 'Build', protein: 150, hint: 'Win = protein first, carbs around workouts' },
+};
+const MAINTAIN_BREAK_WEEKS = 4;
+// Lean protein quick-picks: a typical serving each (SPEC.md → Protein target)
+const PROTEIN_PICKS = [
+  ['Chicken breast', '4 oz cooked', 35], ['Turkey', '4 oz cooked', 30], ['Egg whites', '1 cup', 26],
+  ['Greek yogurt', '1 cup', 23], ['Tuna', '1 can', 27], ['Shrimp', '4 oz cooked', 24],
+  ['Cottage cheese', '1 cup', 25], ['Protein shake', '1 scoop', 25],
+];
 // Office-friendly, no equipment, no sweat (SPEC.md → Workday movement)
 const DESK_MOVES = [
   ['Calf raises', '20 slow reps, pause at the top'],
@@ -650,6 +668,8 @@ async function loadSettings() {
   S.settings.workoutDays = (S.settings.workoutDays || []).filter(d => d !== SATURDAY);
   S.settings.quietMode = true;
   if (!saved || (saved.schemaVersion || 1) < DEFAULT_SETTINGS.schemaVersion) {
+    // 6 → 7: the protein default dropped from 150 to 135 g. A different number was set by hand, so it stays.
+    if (saved && (saved.schemaVersion || 1) < 7 && saved.proteinTarget === 150) S.settings.proteinTarget = GOAL_MODES.lose.protein;
     S.settings.schemaVersion = DEFAULT_SETTINGS.schemaVersion; // 1 → 2 → 3: new defaults merged in above
     await DB.put('settings', S.settings);
   }
@@ -681,6 +701,8 @@ async function loadHabits() {
   if (!bank) await saveBank();
   // First run of Phase 5b: the lunch prompt's 4-week trial starts today.
   if (!S.settings.lunchPromptSince) { S.settings.lunchPromptSince = today; await DB.put('settings', S.settings); }
+  // First run of goal mode: the 12 weeks start today for the current mode.
+  if (!S.settings.goalSince) { S.settings.goalSince = today; await DB.put('settings', S.settings); }
 }
 function saveLedger() { return DB.put('settings', { ...S.ledger, key: 'ledger' }); }
 function saveBank() { return DB.put('settings', { ...S.bank, key: 'bank' }); }
@@ -1112,7 +1134,7 @@ async function renderToday() {
   const scorecard = now.getDay() === 0 && S.settings.scorecard && S.settings.scorecardSeen !== today
     ? await scorecardHtml(today, facts, { actions: true }) : '';
   $('#view-today').innerHTML = updateBanner + largeTitle('Today', fmtLongDate(now)) + scorecard + await rampCard()
-    + (scorecard ? '' : backupCard(today)) + await habitCards(facts) + await lunchReviewCard() + hero
+    + (scorecard ? '' : backupCard(today)) + await habitCards(facts) + await lunchReviewCard() + await goalCards(today) + hero
     + `<div style="height:12px"></div>` + weekHtml + await dayCard(today);
   setDock(dock);
 }
@@ -1249,6 +1271,93 @@ async function lunchReviewCard() {
         <button class="btn btn-primary" data-action="lunch-review-keep">Keep it</button>
       </div>
     </div>`;
+}
+
+/* ---------- Goal mode: 12-week checkpoint, loss-rate guardrail (SPEC.md → Food features) ---------- */
+const modeName = m => (GOAL_MODES[m] || GOAL_MODES.lose).name;
+const checkpointDue = () => daysSince(S.settings.goalSince) >= S.settings.goalCheckWeeks * 7;
+
+// No weight numbers on Today: the checkpoint is just a door to its sheet, and the guardrail is words only.
+async function goalCards(today) {
+  const st = S.settings;
+  let html = '';
+  if (checkpointDue()) {
+    html += `
+      <div class="card ramp-card">
+        <div class="hero-kicker">${esc(modeName(st.goalMode))} · ${st.goalCheckWeeks} weeks</div>
+        <div class="ramp-title">${st.goalCheckWeeks}-week check-in ready</div>
+        <div class="ramp-actions one"><button class="btn btn-primary" data-action="goal-check">Open</button></div>
+      </div>`;
+  }
+  if (st.goalMode === 'lose' && st.lossNoteSeen !== dateKey(weekStart(parseKey(today)))) {
+    const rate = Food.lossRate(Track.weeklySeries(await DB.getAll('body')), today);
+    if (rate?.fast) html += `
+      <div class="card backup-card stale loss-card">
+        <div class="backup-title">${ICONS.utensils}<span>Losing fast — eat a bit more to protect muscle</span></div>
+        <p class="muted">Your 4-week average is dropping more than 1% of your weight a week. Add a protein snack or a little more at meals.</p>
+        <div class="ramp-actions one"><button class="btn btn-secondary" data-action="loss-note-seen">Got it</button></div>
+      </div>`;
+  }
+  return html;
+}
+
+// A mode change resets protein to that mode's default and starts a fresh checkpoint clock.
+async function setGoalMode(mode, { checkWeeks = 12, prev = null } = {}) {
+  const st = S.settings;
+  Object.assign(st, { goalMode: mode, proteinTarget: GOAL_MODES[mode].protein, goalSince: dateKey(), goalCheckWeeks: checkWeeks, goalPrev: prev });
+  // Written directly: saveSettings would rebuild today's plan, and the mode never changes workouts.
+  await DB.put('settings', st);
+  toast(`${modeName(mode)} · protein ${st.proteinTarget} g a day`);
+}
+
+async function pickGoalMode() {
+  const cur = S.settings.goalMode;
+  const mode = await actionSheet({ title: 'Switch to', actions: Object.keys(GOAL_MODES).filter(m => m !== cur).map(m => ({ label: modeName(m), value: m })) });
+  if (mode) await setGoalMode(mode);
+  return !!mode;
+}
+
+async function openCheckpoint() {
+  const st = S.settings;
+  const cp = Food.checkpoint({ since: st.goalSince, today: dateKey(), weeks: st.goalCheckWeeks,
+    series: Track.weeklySeries(await DB.getAll('body')), logs: await DB.getAll('logs') });
+  const onBreak = st.goalMode === 'maintain' && st.goalPrev && st.goalPrev !== 'maintain';
+  const actions = onBreak
+    ? [['back', `Back to ${modeName(st.goalPrev)}`, 'primary'], ['keep', 'Keep maintaining', 'secondary'], ['switch', 'Switch mode', 'secondary']]
+    : [['keep', 'Keep going', 'primary'], st.goalMode !== 'maintain' ? ['break', 'Maintain a few weeks', 'secondary'] : null, ['switch', 'Switch mode', 'secondary']].filter(Boolean);
+  const root = $('#fsheet');
+  root.innerHTML = `
+    <div class="sheet-backdrop" data-g="cancel"></div>
+    <div class="wsheet">
+      <div class="ws-title">${st.goalCheckWeeks}-week check-in</div>
+      <div class="ws-sub">${esc(modeName(st.goalMode))} since ${esc(fmtShortDate(parseKey(st.goalSince)))}</div>
+      <div class="body-stats cp-stats">
+        <div><div class="body-stat-label">Weight, 4-week average</div>
+          ${cp.weight ? `<div class="body-stat num">${signedLb(cp.weight.change)}</div><div class="cp-sub num">${fmtLb(cp.weight.from)} → ${fmtLb(cp.weight.to)} lb</div>`
+            : '<div class="cp-sub">Not enough weigh-ins yet</div>'}</div>
+        <div><div class="body-stat-label">Levels gained</div><div class="body-stat num">${cp.levels}</div><div class="cp-sub">moved up a rung</div></div>
+      </div>
+      <div class="cp-actions">${actions.map(([v, label, kind]) => `<button type="button" class="btn btn-${kind}" data-g="${v}">${esc(label)}</button>`).join('')}</div>
+      <button type="button" class="text-btn cp-later" data-g="cancel">Later</button>
+    </div>`;
+  root.hidden = false;
+  root.onclick = async e => {
+    const g = e.target.closest('[data-g]')?.dataset.g;
+    if (!g) return;
+    root.hidden = true; root.innerHTML = '';
+    if (g === 'keep') {
+      Object.assign(st, { goalSince: dateKey(), goalCheckWeeks: 12, goalPrev: null });
+      await DB.put('settings', st);
+      toast('Next check-in in 12 weeks');
+    } else if (g === 'break') {
+      await setGoalMode('maintain', { checkWeeks: MAINTAIN_BREAK_WEEKS, prev: st.goalMode });
+    } else if (g === 'back') {
+      await setGoalMode(st.goalPrev);
+    } else if (g === 'switch') {
+      if (!await pickGoalMode()) return openCheckpoint();
+    }
+    if (S.tab === 'today') renderToday();
+  };
 }
 
 async function logDeskBreak() {
@@ -1657,11 +1766,15 @@ async function renderFood() {
         </div>
       </div>
       <div class="protein-btns">${[20, 30, 40].map(g => `<button class="btn btn-secondary" data-action="protein" data-g="${g}">+${g} g</button>`).join('')}</div>
+      <div class="protein-picks">${PROTEIN_PICKS.map(([name, serving, g]) => `
+        <button class="protein-pick" data-action="protein" data-g="${g}" data-name="${esc(name)}"><span class="pick-name">${esc(name)}</span><span class="pick-sub">${esc(serving)} <span class="num">+${g}</span></span></button>`).join('')}
+      </div>
       ${day.proteinAdds.length ? `<button class="text-btn muted-link protein-undo" data-action="protein-undo">Undo +${day.proteinAdds[day.proteinAdds.length - 1]} g</button>` : ''}
     </div>
 
     <div class="section-label">Meals</div>
     <div class="card meals-card">
+      <div class="meal-hint">${esc(GOAL_MODES[st.goalMode]?.hint || GOAL_MODES.lose.hint)}</div>
       ${meals}
       <button class="row btn-row meal-add" data-action="snack-add">${ICONS.plus}<span>Add a snack</span></button>
     </div>
@@ -2177,6 +2290,10 @@ function foodSettingsHtml() {
   return `
     <div class="section-label">Food and desk</div>
     <div class="group">
+      <div class="row goal-row">
+        <div class="row-main"><div class="row-title">Goal</div></div>
+        <div class="seg">${Object.entries(GOAL_MODES).map(([m, g]) => `<button class="seg-btn ${st.goalMode === m ? 'on' : ''}" data-goal="${m}">${g.name}</button>`).join('')}</div>
+      </div>
       <div class="row"><div class="row-main"><div class="row-title">Protein target</div></div><span class="row-value num">${st.proteinTarget} g a day</span></div>
       ${switchRow('Lunch plan prompt', 'lunchPrompt', { sub: `"What's lunch tomorrow?" after ${hourText(st.lunchPromptHour)}` })}
       ${st.skipTax ? switchRow('Miss-meal tax', 'mealTax', { sub: `${money(st.mealTaxAmount)} per Miss meal, on the skip tax ledger` }) : ''}
@@ -2184,7 +2301,8 @@ function foodSettingsHtml() {
       ${switchRow('Stand goal', 'standGoal', { sub: 'Check off "Stood for 2+ hours" on workdays' })}
       <button class="row btn-row" data-action="food-settings">${ICONS.utensils}<span>Protein, prompt time, meal tax</span></button>
     </div>
-    <div class="section-foot">Desk break reminders: the README shows how to set them up with Clock or Shortcuts.</div>`;
+    <div class="section-foot">${esc(GOAL_MODES[st.goalMode]?.hint || '')}. Workouts are the same in every mode. Changing the goal resets protein (${GOAL_MODES.lose.protein} g, or ${GOAL_MODES.build.protein} g for Build) and starts a new 12 weeks. Next check-in: ${esc(fmtShortDate(addDays(parseKey(st.goalSince || dateKey()), st.goalCheckWeeks * 7)))}.
+      Desk break reminders: the README shows how to set them up with Clock or Shortcuts.</div>`;
 }
 
 async function editFoodSettings() {
@@ -2379,6 +2497,11 @@ async function onMeClick(e) {
     const set = new Set(S.settings.finisherDays);
     set.has(d) ? set.delete(d) : set.add(d);
     await saveSettings({ finisherDays: [...set].sort() });
+    return renderMe();
+  }
+  const goal = e.target.closest('[data-goal]');
+  if (goal) {
+    if (goal.dataset.goal !== S.settings.goalMode) await setGoalMode(goal.dataset.goal);
     return renderMe();
   }
   const fs = e.target.closest('[data-flash-strength]');
@@ -3338,8 +3461,16 @@ function bindEvents() {
     } else if (act === 'go-food') {
       showTab('food');
     } else if (act === 'protein') {
-      await addProtein(Number(e.target.closest('[data-g]').dataset.g));
+      const pick = e.target.closest('[data-g]');
+      await addProtein(Number(pick.dataset.g));
+      if (pick.dataset.name) toast(`${pick.dataset.name} · +${pick.dataset.g} g`);
       renderFood();
+    } else if (act === 'goal-check') {
+      openCheckpoint();
+    } else if (act === 'loss-note-seen') {
+      S.settings.lossNoteSeen = dateKey(weekStart());
+      await DB.put('settings', S.settings);
+      renderToday();
     } else if (act === 'protein-undo') {
       await undoProtein();
       renderFood();

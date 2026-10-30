@@ -51,7 +51,43 @@ const Food = (() => {
     return { planned: asked.length, stuck: asked.filter(d => d.lunchStuck).length };
   }
 
-  return { MEALS, mealForTime, rated, winPct, awards, misses, lunchStats };
+  const parse = key => { const [y, m, d] = key.split('-').map(Number); return new Date(y, m - 1, d); };
+  const daysBetween = (a, b) => Math.round((parse(b) - parse(a)) / 86400000);
+
+  /*
+   * Goal mode checkpoint (SPEC.md → 12-week checkpoint). Due `weeks` weeks after the mode started.
+   * series: Track.weeklySeries points; logs: saved workout logs.
+   * weight: the 4-week average when the mode started (the last point on or before that week, else the first after)
+   *   vs the latest one; null until there are two different points. levels: rung-ups since the mode started.
+   */
+  function checkpoint({ since, today, weeks, series, logs }) {
+    const due = daysBetween(since, today) >= weeks * 7;
+    const sinceWeek = (() => { const d = parse(since); d.setDate(d.getDate() - d.getDay()); return d; })();
+    const before = series.filter(p => parse(p.week) <= sinceWeek);
+    const start = before.length ? before[before.length - 1] : series[0];
+    const end = series[series.length - 1];
+    const weight = start && end && start !== end ? { from: start.avg, to: end.avg, change: end.avg - start.avg } : null;
+    const levels = logs.filter(l => l.date >= since)
+      .reduce((n, l) => n + (l.checkIn?.applied || []).filter(c => c.change === 'rungUp').length, 0);
+    return { due, weight, levels };
+  }
+
+  /*
+   * Loss-rate guardrail (SPEC.md, Lose fat only): the latest 4-week average vs the one 4 weekly points back.
+   * null without 5 points, or when the latest weigh-in is over 14 days old.
+   * fast: dropping more than 1% of body weight a week.
+   */
+  function lossRate(series, today) {
+    if (series.length < 5) return null;
+    const last = series[series.length - 1];
+    const prev = series[series.length - 5];
+    if (daysBetween(last.date, today) > 14) return null;
+    const perWeek = (prev.avg - last.avg) / (daysBetween(prev.week, last.week) / 7);
+    const pct = perWeek / last.avg * 100;
+    return { perWeek, pct, fast: pct > 1 };
+  }
+
+  return { MEALS, mealForTime, rated, winPct, awards, misses, lunchStats, checkpoint, lossRate };
 })();
 
 if (typeof module !== 'undefined') module.exports = Food;

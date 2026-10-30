@@ -692,6 +692,21 @@ a.btn { text-decoration: none; }
 .protein-btns { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 16px; }
 .protein-btns .btn { min-height: 52px; font-size: 18px; font-variant-numeric: tabular-nums; }
 .protein-undo { margin-top: 10px; }
+.protein-picks { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+.protein-pick { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; min-height: 52px; padding: 8px 12px; border-radius: 12px; background: var(--surface-raised); text-align: left; color: var(--text); transition: background-color var(--dur) ease; }
+.protein-pick:active { background: var(--surface); }
+.pick-name { font-size: 15px; font-weight: 600; }
+.pick-sub { font-size: 13px; color: var(--text-muted); }
+.pick-sub .num { color: var(--accent); font-weight: 600; }
+.meal-hint { padding: 12px 0 2px; font-size: 15px; color: var(--text-muted); }
+.goal-row { flex-wrap: wrap; gap: 10px; }
+.goal-row .seg { flex: 1 1 100%; }
+.goal-row .seg-btn { flex: 1; min-width: 0; padding: 0 6px; }
+.cp-stats { margin: 16px 0 4px; }
+.cp-sub { font-size: 14px; color: var(--text-muted); margin-top: 2px; }
+.cp-actions { display: flex; flex-direction: column; gap: 10px; margin-top: 18px; }
+.cp-actions .btn { min-height: 50px; }
+.cp-later { display: block; margin: 12px auto 0; color: var(--text-muted); }
 
 .meals-card { padding: 4px 16px 0; }
 .meal { padding: 14px 0; }

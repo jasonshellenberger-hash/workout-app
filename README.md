@@ -2,7 +2,7 @@
 
 A personal iPhone workout app (PWA): quiet 15–22 minute home workouts, a guided player with timers, and a local log. Plain HTML, CSS, and JavaScript. No framework and no build step. All data stays on the phone.
 
-**Phase 5b (this version):** everything in Phases 1–5a (plan generator, workout player with timers, logging, per-exercise check-in and progression, the 3 → 5 day ramp, weekly weigh-in and chart, history calendar, "never miss twice" streak, 10-minute short-on-time version, morning soreness check, backup and import, 5-minute "Just show up", skip tax with excused days, the $20 text, reward bank, Sunday scorecard) plus the Food tab: Win / OK / Miss meal ratings, a protein tracker, the evening lunch plan, a fast-food game plan, and a meals vs. weight chart. Today adds desk breaks and a stand goal. This is the last phase in `SPEC.md` (kept local, not in the repo).
+**Phase 5b (this version):** everything in Phases 1–5a (plan generator, workout player with timers, logging, per-exercise check-in and progression, the 3 → 5 day ramp, weekly weigh-in and chart, history calendar, "never miss twice" streak, 10-minute short-on-time version, morning soreness check, backup and import, 5-minute "Just show up", skip tax with excused days, the $20 text, reward bank, Sunday scorecard) plus the Food tab: Win / OK / Miss meal ratings, a protein tracker (135 g default, lean quick-picks), a Lose fat / Maintain / Build goal mode with a 12-week check-in and a losing-too-fast note, the evening lunch plan, a fast-food game plan, and a meals vs. weight chart. Today adds desk breaks and a stand goal. This is the last phase in `SPEC.md` (kept local, not in the repo).
 
 ## Files
 
@@ -14,7 +14,7 @@ A personal iPhone workout app (PWA): quiet 15–22 minute home workouts, a guide
 | `adapt.js` | Check-in rules: progression, lighter days, the ramp |
 | `track.js` | Streak, calendar, and weigh-in math |
 | `habits.js` | Skip tax, reward points, and scorecard math |
-| `food.js` | Meal ratings, Win meal %, and food and desk points math |
+| `food.js` | Meal ratings, Win meal %, food and desk points, goal checkpoint and loss-rate math |
 | `db.js` | Storage wrapper: IndexedDB, falling back to localStorage |
 | `exercises.json` | Every ladder, rung, rep range, form cue, and demo link. Edit exercises here. |
 | `manifest.json` | Home-screen install settings |

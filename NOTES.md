@@ -204,7 +204,7 @@ New records live in the `settings` store (no IndexedDB version bump), so backup 
 IndexedDB version 3 adds a `daily` store, one record per date: `{ date, meals: { breakfast, lunch, dinner, snacks: [] }, protein, proteinAdds, lunchPlan, lunchStuck, deskBreaks, stood }`. Each meal is `{ rating: 'win' | 'ok' | 'miss', note, at, fastFood }`. Export includes it, and older backups without it import fine. Settings are schemaVersion 6. The math is in `food.js` (pure functions).
 
 - **Food tab.**
-  - **Protein:** a ring, +20 / +30 / +40 g, and Undo for the last add. The target is 150 g (Me → Food and desk).
+  - **Protein:** a ring, +20 / +30 / +40 g, and Undo for the last add. The target was 150 g; v6.1.0 makes it 135 g (see below).
   - **Meals:** Breakfast, Lunch, Dinner, and any snacks, each with Win · OK · Miss. Tapping the selected rating clears it. **Note** adds a note. A snack's **Edit** can delete it.
   - **Dock:** "Log breakfast/lunch/dinner" for the meal that fits the time (lunch from 10:30, dinner from 3:30). It opens Win / OK / Miss and goes away once that meal is rated.
   - **Fast-food game plan:** places with a better order. Tap one to see the order. "Ordered it" logs the current meal as OK, so it's never a Miss or taxed.
@@ -220,6 +220,18 @@ IndexedDB version 3 adds a `daily` store, one record per date: `{ date, meals: {
 - **Scorecard:** adds Win meals % for last week ("–" if nothing was rated).
 - **History:** a tapped day also shows a "Food and desk" line: meals, lunch plan, protein, desk breaks, stand.
 - **README:** a "Desk break reminders" section (Clock alarms or a Shortcuts Time of Day automation).
+
+
+## Goal mode and protein 135 (v6.1.0, cache v13)
+
+Settings schemaVersion 7. No IndexedDB change; meal ratings and daily records are untouched.
+
+- **Protein:** the default is 135 g. Upgrading from schema 6 turns a saved 150 (the old default) into 135; any other number was set by hand and stays.
+- **Quick-picks** under +20 / +30 / +40: chicken breast 4 oz cooked +35, turkey 4 oz cooked +30, egg whites 1 cup +26, Greek yogurt 1 cup +23, tuna 1 can +27, shrimp 4 oz cooked +24, cottage cheese 1 cup +25, protein shake 1 scoop +25. They save like the buttons (a number in `proteinAdds`), so Undo works the same.
+- **Goal mode** (Me → Food and desk): Lose fat (default) / Maintain / Build. Changing it sets protein to the mode's default (135 / 135 / 150) and restarts the checkpoint clock. The Food tab's meal card opens with the mode's Win hint. The plan generator never reads the mode.
+- **Checkpoint:** `goalSince` (set to the install day on first run) + `goalCheckWeeks` (12). When due, Today shows only "12-week check-in ready" with Open: no weight on Today. The sheet shows the 4-week average then vs now and levels gained (rung-ups in saved check-ins since `goalSince`), with Keep going / Maintain a few weeks / Switch mode. Maintain a few weeks = Maintain for 4 weeks, then the card offers "Back to <previous mode>".
+- **Guardrail** (Lose fat only): with 5+ weekly weigh-ins and the latest within 14 days, if the 4-week average falls more than 1% of body weight a week, Today shows "Losing fast — eat a bit more to protect muscle". Got it hides it until next Sunday.
+- The math is `Food.checkpoint` and `Food.lossRate` in `food.js`.
 
 ## Known issues / fix next
 
